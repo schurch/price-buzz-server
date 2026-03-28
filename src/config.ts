@@ -12,7 +12,7 @@ function integerFromEnv(name: string, fallback: number): number {
 
 export const config = {
   host: process.env.HOST ?? "127.0.0.1",
-  port: integerFromEnv("PORT", 3000),
+  port: integerFromEnv("PORT", 4321),
   appBaseUrl: (process.env.APP_BASE_URL ?? "").trim().replace(/\/+$/, ""),
   databasePath: path.resolve(process.env.DATABASE_PATH ?? "./data/app.db"),
   checkIntervalMinutes: integerFromEnv("CHECK_INTERVAL_MINUTES", 360),

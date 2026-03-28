@@ -39,9 +39,9 @@ cp .env.example .env
 npm run dev
 ```
 
-The app runs on `http://localhost:3000` by default.
+The app runs on `http://localhost:4321` by default.
 
-For local email verification links, set `APP_BASE_URL=http://127.0.0.1:3000` in your local `.env`.
+For local email verification links, set `APP_BASE_URL=http://127.0.0.1:4321` in your local `.env`.
 
 ## Production Run
 
@@ -56,7 +56,7 @@ npm start
 Production-oriented example:
 
 ```bash
-PORT=3000
+PORT=4321
 HOST=127.0.0.1
 APP_BASE_URL=https://pricebuzz.app
 DATABASE_PATH=./data/app.db
@@ -74,7 +74,7 @@ TELEGRAM_BOT_USERNAME=
 For local development, the most important override is:
 
 ```bash
-APP_BASE_URL=http://127.0.0.1:3000
+APP_BASE_URL=http://127.0.0.1:4321
 ```
 
 Email alerts require `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, and `APP_BASE_URL` so the app can generate verification links. Telegram alerts require `TELEGRAM_BOT_TOKEN`. For the smoothest connect flow, also set `TELEGRAM_BOT_USERNAME`, then users can generate shareable bot links instead of entering chat IDs manually.
@@ -93,12 +93,12 @@ If you want the app to create your initial admin account automatically, set `BOO
 ## Deploy Without Docker
 
 1. Install Node.js 20+ on the server.
-2. Clone the repo into `/srv/pricebuzz`.
+2. Clone the repo into your app directory, for example `/home/YOUR_USER/pricebuzz`.
 3. Create `.env`.
 4. Run `npm install`.
 5. Run `npm run build`.
 6. Copy `systemd/pricebuzz.service` to `/etc/systemd/system/pricebuzz.service`.
-7. The checked-in unit assumes the app lives at `/srv/pricebuzz`. Adjust the paths only if you deploy somewhere else.
+7. The checked-in unit is a template. Update `WorkingDirectory`, `EnvironmentFile`, and `ExecStart` to match your deploy path and your Node 22 binary.
 8. Enable and start the service.
 
 ```bash
@@ -109,25 +109,51 @@ sudo systemctl status pricebuzz
 
 ## Reverse Proxy
 
-Run the app on `127.0.0.1:3000` and put Caddy or Nginx in front of it.
+Run the app on `127.0.0.1:4321` and put Caddy or Nginx in front of it.
 
 Example Caddy config:
 
 ```caddyfile
 pricebuzz.app {
-  reverse_proxy 127.0.0.1:3000
+  reverse_proxy 127.0.0.1:4321
 }
 ```
 
 ## Updating
 
 ```bash
-cd /srv/pricebuzz
+cd /home/YOUR_USER/pricebuzz
 git pull
 npm install
 npm run build
 sudo systemctl restart pricebuzz
 ```
+
+## GitHub Deploys
+
+This repo includes a GitHub Actions workflow at `.github/workflows/deploy.yml` that deploys on every push to `main`.
+
+Required GitHub Actions secrets:
+
+- `DEPLOY_HOST`: your server hostname or IP
+- `DEPLOY_USER`: your SSH user
+- `DEPLOY_PATH`: your deploy path, for example `/home/YOUR_USER/pricebuzz`
+- `DEPLOY_SSH_KEY`: a private SSH key that can log into the server
+
+Server prerequisites for that workflow:
+
+- the app directory already exists on the server
+- `.env` already exists on the server and is not managed by the workflow
+- Node 22 is installed via `nvm` for the deploy user
+- `sudo systemctl restart pricebuzz` works for the deploy user without an interactive password prompt
+
+The workflow does this:
+
+1. runs `npm ci`
+2. runs `npm run build`
+3. syncs the repo to the server with `rsync`
+4. runs `npm ci` and `npm run build` on the server
+5. restarts the `pricebuzz` systemd service
 
 ## Notes
 
