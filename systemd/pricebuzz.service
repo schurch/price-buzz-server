@@ -1,0 +1,15 @@
+[Unit]
+Description=PriceBuzz
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/pricebuzz
+ExecStart=/usr/bin/node dist/server.js
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+EnvironmentFile=/srv/pricebuzz/.env
+
+[Install]
+WantedBy=multi-user.target
