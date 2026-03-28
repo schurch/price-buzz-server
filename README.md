@@ -152,8 +152,10 @@ The workflow does this:
 1. runs `npm ci`
 2. runs `npm run build`
 3. syncs the repo to the server with `rsync`
-4. runs `npm ci` and `npm run build` on the server
+4. runs `npm run build` on the server
 5. restarts the `pricebuzz` systemd service
+
+Dependencies are not reinstalled on the server on every deploy. If you change `package.json` or `package-lock.json`, run `npm install` manually on the server before or after the deploy.
 
 ## Notes
 

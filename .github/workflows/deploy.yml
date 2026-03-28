@@ -62,7 +62,6 @@ jobs:
             . "$NVM_DIR/nvm.sh"
             nvm use 22 >/dev/null
             cd "'"$DEPLOY_PATH"'"
-            npm ci
             npm run build
             sudo systemctl restart pricebuzz
             sudo systemctl status pricebuzz --no-pager
