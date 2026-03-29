@@ -29,6 +29,13 @@ class HttpStatusError extends Error {
   }
 }
 
+class AccessBlockedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AccessBlockedError";
+  }
+}
+
 function parseHeaders(headersJson: string | null): Record<string, string> {
   if (!headersJson) {
     return {};
@@ -51,6 +58,40 @@ function defaultReferer(rawUrl: string): string | null {
   }
 }
 
+function extractBestNumericToken(source: string): string | null {
+  const normalized = source
+    .replaceAll(",", "")
+    .replace(/\s*\.\s*/g, ".")
+    .replace(/\s+/g, " ");
+
+  const preferredPatterns = [
+    /(?:NZ\$|A\$|AU\$|US\$|\$|€|£)\s*([0-9]+(?:\.[0-9]{2})?)/i,
+    /([0-9]+(?:\.[0-9]{2})?)\s*(?:NZD|AUD|USD|EUR|GBP)\b/i,
+    /price[^\d]{0,12}([0-9]+(?:\.[0-9]{2})?)/i,
+    /sale[^\d]{0,12}([0-9]+(?:\.[0-9]{2})?)/i,
+    /now[^\d]{0,12}([0-9]+(?:\.[0-9]{2})?)/i
+  ];
+
+  for (const pattern of preferredPatterns) {
+    const match = pattern.exec(normalized);
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+
+  const allMatches = Array.from(normalized.matchAll(/-?\d+(?:\.\d+)?/g)).map((match) => match[0]);
+  if (allMatches.length === 0) {
+    return null;
+  }
+
+  const decimalMatch = allMatches.find((match) => match.includes("."));
+  if (decimalMatch) {
+    return decimalMatch;
+  }
+
+  return allMatches[0] ?? null;
+}
+
 function normalizePrice(priceText: string, regex: string | null): string {
   let source = priceText;
   if (regex) {
@@ -65,12 +106,12 @@ function normalizePrice(priceText: string, regex: string | null): string {
     .replaceAll(",", "")
     .replace(/\s*\.\s*/g, ".")
     .replace(/\s+/g, " ");
-  const match = /-?\d+(?:\.\d+)?/.exec(normalized);
-  if (!match) {
+  const token = extractBestNumericToken(normalized);
+  if (!token) {
     throw new Error(`Could not parse numeric price from: ${priceText}`);
   }
 
-  return Number.parseFloat(match[0]).toFixed(2);
+  return Number.parseFloat(token).toFixed(2);
 }
 
 function buildPriceExtraction(rawText: string): { previewPrice: string; regex: string | null } {
@@ -104,6 +145,52 @@ function buildPriceExtraction(rawText: string): { previewPrice: string; regex: s
   return {
     previewPrice: normalizePrice(rawText, null),
     regex: null
+  };
+}
+
+function isPlausiblePriceText(rawText: string): boolean {
+  const compact = rawText.replace(/\s+/g, " ").trim();
+  const normalized = compact.replaceAll(",", "");
+  const explicitCurrency = /NZ\$|A\$|AU\$|US\$|USD|NZD|AUD|EUR|GBP|€|£/i.test(compact);
+  const bareDollar = /^\$\s*/.test(compact);
+  const numericParts = normalized.match(/\d+/g) ?? [];
+  if (numericParts.length === 0) {
+    return false;
+  }
+
+  const longestDigitRun = numericParts.reduce((longest, part) => Math.max(longest, part.length), 0);
+  if ((explicitCurrency || bareDollar) && !/\.\d{2}\b/.test(normalized) && longestDigitRun >= 6) {
+    return false;
+  }
+
+  if ((explicitCurrency || bareDollar) && /^\$\s*0\d{4,}\b/.test(normalized)) {
+    return false;
+  }
+
+  return true;
+}
+
+function readCandidateRawText(node: cheerio.Cheerio<any>): {
+  raw: string;
+  attribute: string | null;
+} {
+  if (node.is("meta")) {
+    return {
+      raw: (node.attr("content") ?? "").trim(),
+      attribute: "content"
+    };
+  }
+
+  if (node.attr("data-price")) {
+    return {
+      raw: (node.attr("data-price") ?? "").trim(),
+      attribute: "data-price"
+    };
+  }
+
+  return {
+    raw: node.text().trim(),
+    attribute: null
   };
 }
 
@@ -188,6 +275,68 @@ async function fetchHtmlWithHttp(
   }
 }
 
+function countShellSignals(rawUrl: string, html: string, finalUrl: string): number {
+  let signals = 0;
+  const loweredHtml = html.toLowerCase();
+  const titleMatch = /<title[^>]*>(.*?)<\/title>/i.exec(html);
+  const titleText = (titleMatch?.[1] ?? "").trim();
+  if (!titleText) {
+    signals += 2;
+  }
+
+  if (/<base\s+href=["']\/["']/i.test(html)) {
+    signals += 1;
+  }
+
+  if (/id=["'](__next|root|app-root|app)["']/i.test(html) || /<app-root\b/i.test(html)) {
+    signals += 1;
+  }
+
+  if (/ng-version=|__next|window\.__initial_state__|window\.__apollo_state__/i.test(html)) {
+    signals += 1;
+  }
+
+  const canonicalMatch = /<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)["']/i.exec(html);
+  if (canonicalMatch?.[1]) {
+    try {
+      const requested = new URL(rawUrl);
+      const canonical = new URL(canonicalMatch[1], finalUrl);
+      if (canonical.origin === requested.origin && canonical.pathname === "/" && requested.pathname !== "/") {
+        signals += 2;
+      }
+    } catch {
+      // Ignore malformed URLs in markup.
+    }
+  }
+
+  const ogUrlMatch = /<meta[^>]+property=["']og:url["'][^>]+content=["']([^"']+)["']/i.exec(html);
+  if (ogUrlMatch?.[1]) {
+    try {
+      const requested = new URL(rawUrl);
+      const ogUrl = new URL(ogUrlMatch[1], finalUrl);
+      if (ogUrl.origin === requested.origin && ogUrl.pathname === "/" && requested.pathname !== "/") {
+        signals += 2;
+      }
+    } catch {
+      // Ignore malformed URLs in markup.
+    }
+  }
+
+  if (!/price|product:price|pricecurrency|itemprop=["']price["']|data-price|schema\.org\/product/i.test(loweredHtml)) {
+    signals += 1;
+  }
+
+  return signals;
+}
+
+function shouldUseBrowserFallbackForHtml(rawUrl: string, html: string, finalUrl: string): boolean {
+  if (/product:price|pricecurrency|itemprop=["']price["']|data-price|schema\.org\/product/i.test(html)) {
+    return false;
+  }
+
+  return countShellSignals(rawUrl, html, finalUrl) >= 4;
+}
+
 function shouldUseBrowserFallback(error: unknown): boolean {
   if (!(error instanceof HttpStatusError)) {
     return false;
@@ -205,6 +354,116 @@ function shouldUseBrowserFallback(error: unknown): boolean {
   return /cloudflare|challenge|attention required/i.test(error.responseText);
 }
 
+function detectBlockedPageMessage(html: string, pageUrl: string, title: string): string | null {
+  const lowered = `${title}\n${pageUrl}\n${html.slice(0, 16000)}`.toLowerCase();
+
+  if (/\/waf_deny_page\/|temporarily down|error code:\s*#\d+|access denied/.test(lowered)) {
+    return "This retailer is blocking automated access right now, so PriceBuzz could not load the real product page.";
+  }
+
+  if (/captcha|verify you are human|unusual traffic|bot detection|just a moment|enable javascript|enable cookies/.test(lowered)) {
+    return "This retailer is challenging automated traffic right now, so PriceBuzz could not load the real product page.";
+  }
+
+  return null;
+}
+
+function isBrowserChallengePage(html: string, pageUrl: string, title: string): boolean {
+  const lowered = `${title}\n${pageUrl}\n${html.slice(0, 12000)}`.toLowerCase();
+  return /captcha|verify you are human|access denied|temporarily blocked|unusual traffic|enable javascript|enable cookies|akamai|bot detection|just a moment/.test(lowered);
+}
+
+function hasEmbeddedPriceSignals(html: string): boolean {
+  return /product:price|pricecurrency|itemprop=["']price["']|data-price|schema\.org\/product|"price"\s*:|price__dollars|price__cents/i.test(html);
+}
+
+function escapeInlineScriptJson(input: string): string {
+  return input.replace(/<\/script/gi, "<\\/script");
+}
+
+function appendCapturedJsonPayloads(html: string, payloads: string[]): string {
+  if (payloads.length === 0) {
+    return html;
+  }
+
+  const scripts = payloads.map((payload, index) =>
+    `<script type="application/json" data-pricebuzz-capture="${index}">${escapeInlineScriptJson(payload)}</script>`
+  ).join("");
+  return `${html}\n${scripts}`;
+}
+
+function looksLikeRelevantJsonPayload(url: string, contentType: string, body: string): boolean {
+  if (body.length === 0) {
+    return false;
+  }
+
+  if (!/json|graphql/i.test(contentType) && !/api|graphql|product|products|price/i.test(url)) {
+    return false;
+  }
+
+  return /"price"|priceCurrency|salePrice|wasPrice|currentPrice|offerPrice|unitPrice|stockcode|sku|product/i.test(body);
+}
+
+function isRetryableBrowserError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /ERR_HTTP2_PROTOCOL_ERROR|ERR_ABORTED|ERR_NETWORK_CHANGED|ERR_TIMED_OUT|Timeout/i.test(message);
+}
+
+async function navigateBrowserPage(page: any, rawUrl: string, timeoutMs: number): Promise<void> {
+  const attempts: Array<{ waitUntil: "commit" | "domcontentloaded" | "load"; timeout: number }> = [
+    { waitUntil: "commit", timeout: Math.max(8_000, Math.floor(timeoutMs * 0.6)) },
+    { waitUntil: "domcontentloaded", timeout: timeoutMs },
+    { waitUntil: "load", timeout: Math.max(12_000, Math.floor(timeoutMs * 1.5)) }
+  ];
+
+  let lastError: unknown = null;
+  for (const [index, attempt] of attempts.entries()) {
+    try {
+      await page.goto(rawUrl, attempt);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableBrowserError(error) || index === attempts.length - 1) {
+        throw error;
+      }
+      await page.waitForTimeout(600 * (index + 1));
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+async function settleBrowserPage(page: any, rawUrl: string, timeoutMs: number): Promise<string> {
+  await page.waitForLoadState("domcontentloaded", { timeout: Math.max(4_000, Math.floor(timeoutMs * 0.5)) }).catch(() => undefined);
+  await page.waitForLoadState("networkidle", { timeout: Math.max(4_000, Math.floor(timeoutMs * 0.75)) }).catch(() => undefined);
+  await page.waitForTimeout(750);
+
+  let html = await page.content();
+  const title = await page.title().catch(() => "");
+  const blockedMessage = detectBlockedPageMessage(html, page.url(), title);
+  if (blockedMessage) {
+    throw new AccessBlockedError(blockedMessage);
+  }
+  if (isBrowserChallengePage(html, page.url(), title)) {
+    await page.waitForTimeout(2_500);
+    html = await page.content();
+    const delayedBlockedMessage = detectBlockedPageMessage(html, page.url(), title);
+    if (delayedBlockedMessage) {
+      throw new AccessBlockedError(delayedBlockedMessage);
+    }
+  }
+
+  if (shouldUseBrowserFallbackForHtml(rawUrl, html, page.url()) && !hasEmbeddedPriceSignals(html)) {
+    await page.waitForTimeout(1_500);
+    await page.reload({ waitUntil: "commit", timeout: Math.max(8_000, Math.floor(timeoutMs * 0.75)) }).catch(() => undefined);
+    await page.waitForLoadState("domcontentloaded", { timeout: Math.max(4_000, Math.floor(timeoutMs * 0.5)) }).catch(() => undefined);
+    await page.waitForLoadState("networkidle", { timeout: Math.max(4_000, Math.floor(timeoutMs * 0.75)) }).catch(() => undefined);
+    html = await page.content();
+  }
+
+  return html;
+}
+
 async function fetchHtmlWithBrowser(
   rawUrl: string,
   headers: Record<string, string>,
@@ -213,26 +472,68 @@ async function fetchHtmlWithBrowser(
   const { chromium } = await import("playwright");
   const browser = await chromium.launch({
     headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"]
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
   });
 
   try {
     const context = await browser.newContext({
       userAgent: config.userAgent,
+      viewport: { width: 1366, height: 900 },
+      screen: { width: 1366, height: 900 },
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: false,
+      colorScheme: "light",
+      reducedMotion: "no-preference",
       ...(scrapePreferences?.browserLocale?.trim() ? { locale: scrapePreferences.browserLocale.trim() } : {}),
       ...(scrapePreferences?.browserTimezone?.trim() ? { timezoneId: scrapePreferences.browserTimezone.trim() } : {})
     });
 
+    const capturedJsonPayloads: string[] = [];
     const page = await context.newPage();
-    await page.setExtraHTTPHeaders(buildScrapeHeaders(headers, scrapePreferences));
-    await page.goto(rawUrl, {
-      waitUntil: "domcontentloaded",
-      timeout: config.timeoutSeconds * 1000
+    page.on("response", (response) => {
+      if (capturedJsonPayloads.length >= 8) {
+        return;
+      }
+
+      void (async () => {
+        try {
+          const request = response.request();
+          if (!["xhr", "fetch"].includes(request.resourceType())) {
+            return;
+          }
+
+          const responseUrl = response.url();
+          const originMatches = new URL(responseUrl).origin === new URL(rawUrl).origin;
+          if (!originMatches) {
+            return;
+          }
+
+          const contentType = response.headers()["content-type"] ?? "";
+          const body = await response.text();
+          if (!looksLikeRelevantJsonPayload(responseUrl, contentType, body)) {
+            return;
+          }
+
+          capturedJsonPayloads.push(body.slice(0, 50_000));
+        } catch {
+          // Ignore response inspection failures and keep scraping.
+        }
+      })();
     });
-    await page.waitForLoadState("networkidle", { timeout: config.timeoutSeconds * 1000 }).catch(() => undefined);
+    await page.setExtraHTTPHeaders(buildScrapeHeaders(headers, scrapePreferences));
+    await page.setExtraHTTPHeaders({
+      ...buildScrapeHeaders(headers, scrapePreferences),
+      "Upgrade-Insecure-Requests": "1",
+      "Sec-CH-UA": "\"Chromium\";v=\"134\", \"Not:A-Brand\";v=\"24\", \"Google Chrome\";v=\"134\"",
+      "Sec-CH-UA-Mobile": "?0",
+      "Sec-CH-UA-Platform": "\"Windows\""
+    });
+    await navigateBrowserPage(page, rawUrl, config.timeoutSeconds * 1000);
+    const html = await settleBrowserPage(page, rawUrl, config.timeoutSeconds * 1000);
 
     return {
-      html: await page.content(),
+      html: appendCapturedJsonPayloads(html, capturedJsonPayloads),
       url: page.url()
     };
   } finally {
@@ -308,6 +609,69 @@ function scoreInlineCurrencyMatch(pageHtml: string, startIndex: number, rawText:
   return score;
 }
 
+function scoreJsonPriceKey(key: string): number {
+  const loweredKey = key.toLowerCase();
+  const hasCurrentSignal = /current|sale|offer|promo|online|member|club/.test(loweredKey);
+  const hasPriceSignal = /price/.test(loweredKey);
+  const hasGenericValueSignal = /amount|value/.test(loweredKey);
+
+  if (hasCurrentSignal && hasPriceSignal) {
+    return 18;
+  }
+  if (hasCurrentSignal && hasGenericValueSignal) {
+    return 7;
+  }
+  if (hasCurrentSignal) {
+    return 8;
+  }
+  if (hasPriceSignal) {
+    return 12;
+  }
+  if (hasGenericValueSignal) {
+    return 4;
+  }
+  if (/cents|cent|minor/.test(loweredKey)) {
+    return 18;
+  }
+  if (/was|original|regular|before|compare/.test(loweredKey)) {
+    return -12;
+  }
+  return 0;
+}
+
+function buildJsonPriceExtraction(key: string, rawValue: string): { previewRawText: string; previewPrice: string } | null {
+  const normalizedValue = rawValue.trim();
+  if (!normalizedValue) {
+    return null;
+  }
+
+  const numeric = Number.parseFloat(normalizedValue);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+
+  const loweredKey = key.toLowerCase();
+  const looksLikeMinorUnitInteger = !normalizedValue.includes(".")
+    && /^\d+$/.test(normalizedValue)
+    && numeric >= 100
+    && numeric <= 999999
+    && /value|cents|cent|minor|amount/.test(loweredKey)
+    && !/unitprice|priceper|weight|quantity|grams|kg|g$/.test(loweredKey);
+
+  if (looksLikeMinorUnitInteger) {
+    const converted = (numeric / 100).toFixed(2);
+    return {
+      previewRawText: converted,
+      previewPrice: converted
+    };
+  }
+
+  return {
+    previewRawText: normalizedValue,
+    previewPrice: buildPriceExtraction(normalizedValue).previewPrice
+  };
+}
+
 function detectGenericPriceCandidate(pageHtml: string, $: cheerio.CheerioAPI): {
   selector?: string | null;
   attribute?: string | null;
@@ -335,9 +699,8 @@ function detectGenericPriceCandidate(pageHtml: string, $: cheerio.CheerioAPI): {
   for (const selector of COMMON_PRICE_SELECTORS) {
     $(selector).slice(0, 8).each((index, element) => {
       const node = $(element);
-      const attribute = node.is("meta") ? "content" : null;
-      const raw = (attribute ? node.attr(attribute) ?? "" : node.text()).trim();
-      if (!/\d/.test(raw)) {
+      const { raw, attribute } = readCandidateRawText(node);
+      if (!/\d/.test(raw) || !isPlausiblePriceText(raw)) {
         return;
       }
 
@@ -348,8 +711,11 @@ function detectGenericPriceCandidate(pageHtml: string, $: cheerio.CheerioAPI): {
         const loweredRaw = raw.toLowerCase();
         if (loweredSelector.includes("product")) score += 6;
         if (loweredSelector.includes("data-testid")) score += 3;
+        if (attribute === "data-price") score += 8;
         if (node.parents("script,noscript,style").length > 0) score -= 8;
         if (/wishlist|discount|save|xp|rating|reviews|star/.test(loweredRaw)) score -= 6;
+        if (/\bwas\b|previously|before/.test(loweredRaw)) score -= 14;
+        if (/\bnow\b|current price|club price|special/.test(loweredRaw)) score += 8;
         if (node.text().trim().length <= 18) score += 2;
         const hasInclusiveTaxLabel = /(?:inc|incl)\.?\s*(?:gst|vat|tax)\b|(?:including|with)\s+tax\b|tax\s*included\b|\bttc\b|\btva\s*incl(?:use)?\b/.test(loweredRaw);
         const hasExclusiveTaxLabel = /\+gst\b|ex\s*gst\b|excluding\s*gst\b|\+vat\b|ex\s*vat\b|excluding\s*vat\b|ex\s*tax\b|excluding\s*tax\b|tax\s*excluded\b/.test(loweredRaw);
@@ -391,6 +757,9 @@ function detectGenericPriceCandidate(pageHtml: string, $: cheerio.CheerioAPI): {
       if (!match[1] || typeof match.index !== "number") {
         continue;
       }
+      if (!isPlausiblePriceText(match[1])) {
+        continue;
+      }
 
       try {
         candidates.push({
@@ -401,6 +770,41 @@ function detectGenericPriceCandidate(pageHtml: string, $: cheerio.CheerioAPI): {
           previewPrice: buildPriceExtraction(match[1]).previewPrice,
           currency: inferCurrencyFromText(match[1]),
           score: pattern.score + scoreInlineCurrencyMatch(pageHtml, match.index, match[1])
+        });
+      } catch {
+        // ignore unusable candidate
+      }
+    }
+  }
+
+  const jsonPricePatterns = [
+    /"([A-Za-z0-9_]*?(?:price|amount|value)[A-Za-z0-9_]*)"\s*:\s*"?([0-9]+(?:\.[0-9]{2})?)"?/gi
+  ];
+
+  for (const pattern of jsonPricePatterns) {
+    for (const match of pageHtml.matchAll(pattern)) {
+      const key = match[1]?.trim() ?? "";
+      const value = match[2]?.trim() ?? "";
+      if (!key || !value) {
+        continue;
+      }
+      if (!isPlausiblePriceText(value)) {
+        continue;
+      }
+
+      try {
+        const extraction = buildJsonPriceExtraction(key, value);
+        if (!extraction) {
+          continue;
+        }
+        candidates.push({
+          regex: null,
+          htmlRegex: `"${key}"\\s*:\\s*"?([0-9]+(?:\\.[0-9]{2})?)"?`,
+          detectionSource: "auto:json-price-key",
+          previewRawText: extraction.previewRawText,
+          previewPrice: extraction.previewPrice,
+          currency: "",
+          score: scoreJsonPriceKey(key)
         });
       } catch {
         // ignore unusable candidate
@@ -440,6 +844,79 @@ function buildDetectionResult(input: {
   };
 }
 
+function detectJsonLdPrice(html: string): { previewRawText: string; previewPrice: string; currency: string } | null {
+  const scriptPattern = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  type Candidate = { previewRawText: string; previewPrice: string; currency: string; score: number };
+  const candidates: Candidate[] = [];
+
+  for (const match of html.matchAll(scriptPattern)) {
+    const rawJson = match[1]?.trim();
+    if (!rawJson) {
+      continue;
+    }
+
+    try {
+      const parsed = JSON.parse(rawJson) as unknown;
+      const nodes = Array.isArray(parsed) ? parsed : [parsed];
+      for (const node of nodes) {
+        if (!node || typeof node !== "object") {
+          continue;
+        }
+
+        const offers = (node as { offers?: unknown }).offers;
+        const offerNodes = Array.isArray(offers) ? offers : offers ? [offers] : [];
+        for (const offer of offerNodes) {
+          if (!offer || typeof offer !== "object") {
+            continue;
+          }
+
+          const price = (offer as { price?: unknown }).price;
+          const lowPrice = (offer as { lowPrice?: unknown }).lowPrice;
+          const priceCurrency = (offer as { priceCurrency?: unknown }).priceCurrency;
+          const rawCandidates = [price, lowPrice];
+          for (const rawCandidate of rawCandidates) {
+            if ((typeof rawCandidate === "string" || typeof rawCandidate === "number") && `${rawCandidate}`.trim()) {
+              const normalized = `${rawCandidate}`.trim();
+              const previewPrice = buildPriceExtraction(normalized).previewPrice;
+              const numericValue = Number.parseFloat(previewPrice);
+              let score = 30;
+              if (typeof price === "string" || typeof price === "number") {
+                if (`${rawCandidate}` === `${price}`) {
+                  score += 6;
+                }
+              }
+              if (typeof lowPrice === "string" || typeof lowPrice === "number") {
+                if (`${rawCandidate}` === `${lowPrice}`) {
+                  score += 5;
+                }
+              }
+              if (numericValue <= 0) {
+                score -= 40;
+              }
+              candidates.push({
+                previewRawText: normalized,
+                previewPrice,
+                currency: typeof priceCurrency === "string" ? priceCurrency.trim().toUpperCase() : "",
+                score
+              });
+            }
+          }
+        }
+      }
+    } catch {
+      // Ignore malformed JSON-LD blocks and keep scanning.
+    }
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  const winner = candidates[0];
+  return winner ? {
+    previewRawText: winner.previewRawText,
+    previewPrice: winner.previewPrice,
+    currency: winner.currency
+  } : null;
+}
+
 function logScrapeEvent(event: string, input: Record<string, string | null | undefined>): void {
   const payload = Object.fromEntries(
     Object.entries(input).map(([key, value]) => [key, value ?? ""])
@@ -466,8 +943,20 @@ async function fetchHtmlWithPreferences(
 
   try {
     const page = await fetchHtmlWithHttp(rawUrl, headers, scrapePreferences);
+    const pageTitle = /<title[^>]*>(.*?)<\/title>/i.exec(page.html)?.[1]?.trim() ?? "";
+    const blockedMessage = detectBlockedPageMessage(page.html, page.url, pageTitle);
+    if (blockedMessage) {
+      throw new AccessBlockedError(blockedMessage);
+    }
+    if (shouldUseBrowserFallbackForHtml(rawUrl, page.html, page.url)) {
+      const browserPage = await fetchHtmlWithBrowser(rawUrl, headers, scrapePreferences);
+      return { ...browserPage, fetchMode: "browser" };
+    }
     return { ...page, fetchMode: "http" };
   } catch (error) {
+    if (error instanceof AccessBlockedError) {
+      throw error;
+    }
     if (shouldUseBrowserFallback(error)) {
       const page = await fetchHtmlWithBrowser(rawUrl, headers, scrapePreferences);
       return { ...page, fetchMode: "browser" };
@@ -485,6 +974,29 @@ export async function detectTrackedItem(rawUrl: string, scrapePreferences: Scrap
     || pageTitle
     || page.url;
   const pageCurrency = detectCurrency(page.html, $);
+  const jsonLdPrice = detectJsonLdPrice(page.html);
+  if (jsonLdPrice) {
+    const result = buildDetectionResult({
+      url: page.url,
+      name,
+      pageTitle,
+      currency: jsonLdPrice.currency || pageCurrency,
+      htmlRegex: "\"price\"\\s*:\\s*\"?([0-9]+(?:\\.[0-9]+)?)\"?",
+      detectionSource: "auto:json-ld-price",
+      previewRawText: jsonLdPrice.previewRawText,
+      previewPrice: jsonLdPrice.previewPrice
+    });
+    logScrapeEvent("detect", {
+      inputUrl: rawUrl,
+      finalUrl: page.url,
+      fetchMode: page.fetchMode,
+      detectionSource: result.detectionSource,
+      previewRawText: result.previewRawText,
+      previewPrice: result.previewPrice,
+      currency: result.currency
+    });
+    return result;
+  }
   const genericCandidate = detectGenericPriceCandidate(page.html, $);
   if (genericCandidate) {
     const result = buildDetectionResult({
@@ -499,31 +1011,6 @@ export async function detectTrackedItem(rawUrl: string, scrapePreferences: Scrap
       detectionSource: genericCandidate.detectionSource,
       previewRawText: genericCandidate.previewRawText,
       previewPrice: genericCandidate.previewPrice
-    });
-    logScrapeEvent("detect", {
-      inputUrl: rawUrl,
-      finalUrl: page.url,
-      fetchMode: page.fetchMode,
-      detectionSource: result.detectionSource,
-      previewRawText: result.previewRawText,
-      previewPrice: result.previewPrice,
-      currency: result.currency
-    });
-    return result;
-  }
-
-  const jsonLdMatch = /"price"\s*:\s*"?([0-9]+(?:\.\d+)?)"?/i.exec(page.html);
-  if (jsonLdMatch) {
-    const previewRawText = jsonLdMatch[1];
-    const result = buildDetectionResult({
-      url: page.url,
-      name,
-      pageTitle,
-      currency: pageCurrency,
-      htmlRegex: "\"price\"\\s*:\\s*\"?([0-9]+(?:\\.[0-9]+)?)\"?",
-      detectionSource: "auto:json-ld-price",
-      previewRawText,
-      previewPrice: normalizePrice(previewRawText, null)
     });
     logScrapeEvent("detect", {
       inputUrl: rawUrl,
