@@ -41,6 +41,9 @@ export class AppDb {
         role TEXT NOT NULL DEFAULT 'user',
         is_active INTEGER NOT NULL DEFAULT 1,
         email_verified_at TEXT,
+        accept_language TEXT,
+        browser_locale TEXT,
+        browser_timezone TEXT,
         created_at TEXT NOT NULL
       );
 
@@ -161,6 +164,9 @@ export class AppDb {
     this.ensureColumn("users", "first_name", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("users", "last_name", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("users", "email_verified_at", "TEXT");
+    this.ensureColumn("users", "accept_language", "TEXT");
+    this.ensureColumn("users", "browser_locale", "TEXT");
+    this.ensureColumn("users", "browser_timezone", "TEXT");
   }
 
   private ensureColumn(tableName: string, columnName: string, definition: string): void {
@@ -184,10 +190,16 @@ export class AppDb {
     passwordHash: string;
     role?: UserRole;
     emailVerifiedAt?: string | null;
+    acceptLanguage?: string | null;
+    browserLocale?: string | null;
+    browserTimezone?: string | null;
   }): number {
     const result = this.db.prepare(`
-      INSERT INTO users (first_name, last_name, email, password_hash, role, is_active, email_verified_at, created_at)
-      VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+      INSERT INTO users (
+        first_name, last_name, email, password_hash, role, is_active, email_verified_at,
+        accept_language, browser_locale, browser_timezone, created_at
+      )
+      VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
     `).run(
       input.firstName.trim(),
       input.lastName.trim(),
@@ -195,6 +207,9 @@ export class AppDb {
       input.passwordHash,
       input.role ?? "user",
       input.emailVerifiedAt ?? null,
+      input.acceptLanguage?.trim() || null,
+      input.browserLocale?.trim() || null,
+      input.browserTimezone?.trim() || null,
       utcNow()
     );
 
@@ -212,6 +227,9 @@ export class AppDb {
         role,
         is_active AS isActive,
         email_verified_at AS emailVerifiedAt,
+        accept_language AS acceptLanguage,
+        browser_locale AS browserLocale,
+        browser_timezone AS browserTimezone,
         created_at AS createdAt
       FROM users
       WHERE email = ?
@@ -238,6 +256,9 @@ export class AppDb {
         role,
         is_active AS isActive,
         email_verified_at AS emailVerifiedAt,
+        accept_language AS acceptLanguage,
+        browser_locale AS browserLocale,
+        browser_timezone AS browserTimezone,
         created_at AS createdAt
       FROM users
       WHERE id = ?
@@ -275,6 +296,9 @@ export class AppDb {
         users.role,
         users.is_active AS isActive,
         users.email_verified_at AS emailVerifiedAt,
+        users.accept_language AS acceptLanguage,
+        users.browser_locale AS browserLocale,
+        users.browser_timezone AS browserTimezone,
         users.created_at AS createdAt
       FROM sessions
       JOIN users ON users.id = sessions.user_id
@@ -297,6 +321,26 @@ export class AppDb {
       SET email_verified_at = ?
       WHERE id = ?
     `).run(verifiedAt, userId);
+  }
+
+  updateUserScrapePreferences(userId: number, input: {
+    acceptLanguage?: string | null;
+    browserLocale?: string | null;
+    browserTimezone?: string | null;
+  }): void {
+    this.db.prepare(`
+      UPDATE users
+      SET
+        accept_language = COALESCE(@acceptLanguage, accept_language),
+        browser_locale = COALESCE(@browserLocale, browser_locale),
+        browser_timezone = COALESCE(@browserTimezone, browser_timezone)
+      WHERE id = @userId
+    `).run({
+      userId,
+      acceptLanguage: input.acceptLanguage?.trim() || null,
+      browserLocale: input.browserLocale?.trim() || null,
+      browserTimezone: input.browserTimezone?.trim() || null
+    });
   }
 
   createTrackedItem(input: TrackedItemInput): number {

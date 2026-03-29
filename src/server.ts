@@ -10,7 +10,7 @@ import { NotificationService } from "./notifications.js";
 import { renderAuthPage, renderLandingPage, renderOnboardingPage, renderPlatformAdminPage, renderUserAdminPage, renderUserDashboard } from "./render.js";
 import { detectTrackedItem } from "./scraper.js";
 import { TrackerService } from "./tracker.js";
-import type { UserRecord } from "./types.js";
+import type { ScrapePreferences, UserRecord } from "./types.js";
 
 const app = Fastify({ logger: true });
 const db = new AppDb(config.databasePath);
@@ -59,6 +59,49 @@ function setSession(reply: FastifyReply, sessionId: string): void {
 
 function clearSession(reply: FastifyReply): void {
   reply.clearCookie(config.sessionCookieName, { path: "/" });
+}
+
+function normalizeAcceptLanguage(value: string | null | undefined): string | null {
+  const normalized = value?.trim().replace(/\s+/g, " ") ?? "";
+  return normalized || null;
+}
+
+function normalizeBrowserLocale(value: string | null | undefined, acceptLanguage: string | null): string | null {
+  const candidate = value?.trim() || acceptLanguage?.split(",")[0]?.split(";")[0]?.trim() || "";
+  return candidate || null;
+}
+
+function normalizeBrowserTimezone(value: string | null | undefined): string | null {
+  const timezone = value?.trim() ?? "";
+  if (!timezone) {
+    return null;
+  }
+
+  try {
+    Intl.DateTimeFormat("en-US", { timeZone: timezone }).format();
+    return timezone;
+  } catch {
+    return null;
+  }
+}
+
+function readScrapePreferences(
+  request: FastifyRequest,
+  body: Record<string, string | undefined> | null = null
+): ScrapePreferences {
+  const rawAcceptLanguageHeader = request.headers["accept-language"];
+  const headerAcceptLanguage = typeof rawAcceptLanguageHeader === "string" ? rawAcceptLanguageHeader : null;
+  const acceptLanguage = normalizeAcceptLanguage(body?.acceptLanguage ?? headerAcceptLanguage);
+
+  return {
+    acceptLanguage,
+    browserLocale: normalizeBrowserLocale(body?.browserLocale, acceptLanguage),
+    browserTimezone: normalizeBrowserTimezone(body?.browserTimezone)
+  };
+}
+
+function persistUserScrapePreferences(userId: number, scrapePreferences: ScrapePreferences): void {
+  db.updateUserScrapePreferences(userId, scrapePreferences);
 }
 
 function getCurrentUser(request: FastifyRequest): UserRecord | null {
@@ -132,7 +175,10 @@ function bootstrapAdminUser(): void {
     email: config.bootstrapAdminEmail,
     passwordHash: createPasswordHash(config.bootstrapAdminPassword),
     role: "admin",
-    emailVerifiedAt: new Date().toISOString()
+    emailVerifiedAt: new Date().toISOString(),
+    acceptLanguage: null,
+    browserLocale: null,
+    browserTimezone: null
   });
   const user = db.getUserById(userId);
   if (user) {
@@ -155,6 +201,7 @@ app.get("/signup", async (_request, reply) => {
 
 app.post("/signup", async (request, reply) => {
   const body = request.body as Record<string, string | undefined>;
+  const scrapePreferences = readScrapePreferences(request, body);
   const firstName = body.firstName?.trim() ?? "";
   const lastName = body.lastName?.trim() ?? "";
   const email = body.email?.trim().toLowerCase() ?? "";
@@ -182,7 +229,8 @@ app.post("/signup", async (request, reply) => {
     firstName,
     lastName,
     email,
-    passwordHash: createPasswordHash(password)
+    passwordHash: createPasswordHash(password),
+    ...scrapePreferences
   });
   const user = db.getUserById(userId);
   if (!user) {
@@ -278,6 +326,7 @@ app.get("/account/email/confirm", async (request, reply) => {
 
 app.post("/login", async (request, reply) => {
   const body = request.body as Record<string, string | undefined>;
+  const scrapePreferences = readScrapePreferences(request, body);
   const email = body.email?.trim().toLowerCase() ?? "";
   const password = body.password?.trim() ?? "";
   const user = db.getUserByEmail(email);
@@ -288,6 +337,7 @@ app.post("/login", async (request, reply) => {
   }
 
   ensureUserEmailNotificationChannel(user);
+  persistUserScrapePreferences(user.id, scrapePreferences);
   const sessionId = createSessionToken();
   db.createSession({
     id: sessionId,
@@ -356,6 +406,7 @@ app.post("/app/onboarding/item", async (request, reply) => {
   ensureUserEmailNotificationChannel(user);
 
   const body = request.body as Record<string, string | undefined>;
+  const scrapePreferences = readScrapePreferences(request, body);
   const url = body.url?.trim() ?? "";
 
   if (!url) {
@@ -365,7 +416,8 @@ app.post("/app/onboarding/item", async (request, reply) => {
   }
 
   try {
-    const detection = await detectTrackedItem(url);
+    persistUserScrapePreferences(user.id, scrapePreferences);
+    const detection = await detectTrackedItem(url, scrapePreferences);
     clearFlash(reply);
     reply.type("text/html").send(renderOnboardingPage({
       user,
@@ -426,6 +478,7 @@ app.post("/app/items", async (request, reply) => {
   }
 
   const body = request.body as Record<string, string | undefined>;
+  const scrapePreferences = readScrapePreferences(request, body);
   const url = body.url?.trim() ?? "";
 
   if (!url) {
@@ -435,7 +488,8 @@ app.post("/app/items", async (request, reply) => {
   }
 
   try {
-    const detection = await detectTrackedItem(url);
+    persistUserScrapePreferences(user.id, scrapePreferences);
+    const detection = await detectTrackedItem(url, scrapePreferences);
     clearFlash(reply);
     reply.type("text/html").send(renderUserDashboard({
       user,

@@ -98,6 +98,8 @@ For local development, the most important override is:
 APP_BASE_URL=http://127.0.0.1:4321
 ```
 
+Scrape locale is not configured app-wide. PriceBuzz captures browser language and timezone from the user session and reuses that per user for future checks.
+
 Email alerts require `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, and `APP_BASE_URL` so the app can generate verification links. Telegram alerts require `TELEGRAM_BOT_TOKEN`. For the smoothest connect flow, also set `TELEGRAM_BOT_USERNAME`, then users can generate shareable bot links instead of entering chat IDs manually.
 
 For Resend API, the typical setup is:

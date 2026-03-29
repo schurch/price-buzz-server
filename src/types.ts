@@ -1,5 +1,11 @@
 export type UserRole = "user" | "admin";
 
+export type ScrapePreferences = {
+  acceptLanguage: string | null;
+  browserLocale: string | null;
+  browserTimezone: string | null;
+};
+
 export type UserRecord = {
   id: number;
   firstName: string;
@@ -9,6 +15,9 @@ export type UserRecord = {
   role: UserRole;
   isActive: boolean;
   emailVerifiedAt: string | null;
+  acceptLanguage: string | null;
+  browserLocale: string | null;
+  browserTimezone: string | null;
   createdAt: string;
 };
 

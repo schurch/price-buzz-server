@@ -62,6 +62,14 @@ function escapeAttribute(value: string): string {
   return escapeHtml(value).replaceAll("\n", " ");
 }
 
+function renderBrowserContextFields(): string {
+  return `
+    <input type="hidden" name="acceptLanguage" data-browser-context="accept-language">
+    <input type="hidden" name="browserLocale" data-browser-context="browser-locale">
+    <input type="hidden" name="browserTimezone" data-browser-context="browser-timezone">
+  `;
+}
+
 function siteLabel(rawUrl: string): string {
   try {
     return new URL(rawUrl).hostname.replace(/^www\./, "");
@@ -951,6 +959,30 @@ function renderShell(input: {
     ${input.heading ? `<section class="${(input.bodyClass ?? "").includes("app-shell") ? "app-hero" : "hero"}"><h1>${escapeHtml(input.heading)}</h1>${input.subheading ? `<p>${escapeHtml(input.subheading)}</p>` : ""}</section>` : ""}
     ${input.content}
   </main>
+  <script>
+    (() => {
+      const setValue = (selector, value) => {
+        if (!value) return;
+        document.querySelectorAll(selector).forEach((input) => {
+          if (input instanceof HTMLInputElement) {
+            input.value = value;
+          }
+        });
+      };
+
+      const languages = Array.isArray(navigator.languages) && navigator.languages.length > 0
+        ? navigator.languages
+        : [navigator.language].filter(Boolean);
+      setValue('[data-browser-context="accept-language"]', languages.join(','));
+      setValue('[data-browser-context="browser-locale"]', navigator.language || '');
+
+      try {
+        setValue('[data-browser-context="browser-timezone"]', Intl.DateTimeFormat().resolvedOptions().timeZone || '');
+      } catch {
+        // Ignore timezone detection failures in older browsers.
+      }
+    })();
+  </script>
 </body>
 </html>`;
 }
@@ -1308,6 +1340,7 @@ export function renderAuthPage(input: {
                 <label>Last name <input name="lastName" required value="${escapeAttribute(values.lastName ?? "")}"></label>
               </div>
             ` : ""}
+            ${renderBrowserContextFields()}
             <label>Email <input name="email" type="email" required value="${escapeAttribute(values.email ?? "")}"></label>
             <label>Password <input name="password" type="password" required></label>
             <button type="submit">${escapeHtml(title)}</button>
@@ -1391,6 +1424,7 @@ export function renderUserDashboard(input: {
       <section class="panel app-panel app-section">
         <p class="muted">Paste a product URL. The app will fetch the page and try to detect the price automatically.</p>
         <form method="post" action="/app/items">
+          ${renderBrowserContextFields()}
           <input name="url" type="url" required placeholder="Paste a product URL">
           <button type="submit">Track item</button>
         </form>
@@ -1463,6 +1497,7 @@ export function renderOnboardingPage(input: {
       <section class="panel app-panel app-section">
         <p class="muted">Paste a product URL. The app will fetch the page and try to detect the price automatically.</p>
         <form method="post" action="/app/onboarding/item">
+          ${renderBrowserContextFields()}
           <input name="url" type="url" required placeholder="Paste a product URL">
           <div class="actions">
             <button type="submit">Preview item</button>

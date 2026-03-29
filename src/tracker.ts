@@ -28,7 +28,12 @@ export class TrackerService {
       const items = this.db.listEnabledTrackedItems();
       for (const item of items) {
         const previous = this.db.getLatestSuccessfulCheck(item.id);
-        const result = await fetchTrackedItemCheck(item);
+        const owner = this.db.getUserById(item.ownerUserId);
+        const result = await fetchTrackedItemCheck(item, owner ? {
+          acceptLanguage: owner.acceptLanguage,
+          browserLocale: owner.browserLocale,
+          browserTimezone: owner.browserTimezone
+        } : null);
         this.db.insertPriceCheck({
           trackedItemId: item.id,
           status: result.status,

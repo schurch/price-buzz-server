@@ -1,7 +1,7 @@
 import * as cheerio from "cheerio";
 import { config } from "./config.js";
 import { utcNow } from "./utils.js";
-import type { DetectionResult, TrackedItemRecord } from "./types.js";
+import type { DetectionResult, ScrapePreferences, TrackedItemRecord } from "./types.js";
 
 const COMMON_PRICE_SELECTORS = [
   "meta[property='product:price:amount']",
@@ -137,45 +137,35 @@ function extractPriceText(item: TrackedItemRecord, html: string): string {
   return node.text().trim();
 }
 
-async function fetchHtml(rawUrl: string, headersJson: string | null = null): Promise<{
-  html: string;
-  url: string;
-  fetchMode: "http" | "browser";
-}> {
-  const headers = parseHeaders(headersJson);
-  if (!headers.Referer) {
-    const referer = defaultReferer(rawUrl);
-    if (referer) {
-      headers.Referer = referer;
-    }
+function buildScrapeHeaders(
+  headers: Record<string, string>,
+  scrapePreferences: ScrapePreferences | null
+): Record<string, string> {
+  const requestHeaders: Record<string, string> = {
+    "User-Agent": config.userAgent,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    ...headers
+  };
+  if (scrapePreferences?.acceptLanguage?.trim()) {
+    requestHeaders["Accept-Language"] = scrapePreferences.acceptLanguage.trim();
   }
 
-  try {
-    const page = await fetchHtmlWithHttp(rawUrl, headers);
-    return { ...page, fetchMode: "http" };
-  } catch (error) {
-    if (shouldUseBrowserFallback(error)) {
-      const page = await fetchHtmlWithBrowser(rawUrl, headers);
-      return { ...page, fetchMode: "browser" };
-    }
-    throw error;
-  }
+  return requestHeaders;
 }
 
-async function fetchHtmlWithHttp(rawUrl: string, headers: Record<string, string>): Promise<{ html: string; url: string }> {
+async function fetchHtmlWithHttp(
+  rawUrl: string,
+  headers: Record<string, string>,
+  scrapePreferences: ScrapePreferences | null
+): Promise<{ html: string; url: string }> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.timeoutSeconds * 1000);
 
   try {
     const response = await fetch(rawUrl, {
-      headers: {
-        "User-Agent": config.userAgent,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-NZ,en-US;q=0.9,en;q=0.8",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
-        ...headers
-      },
+      headers: buildScrapeHeaders(headers, scrapePreferences),
       signal: controller.signal
     });
 
@@ -215,7 +205,11 @@ function shouldUseBrowserFallback(error: unknown): boolean {
   return /cloudflare|challenge|attention required/i.test(error.responseText);
 }
 
-async function fetchHtmlWithBrowser(rawUrl: string, headers: Record<string, string>): Promise<{ html: string; url: string }> {
+async function fetchHtmlWithBrowser(
+  rawUrl: string,
+  headers: Record<string, string>,
+  scrapePreferences: ScrapePreferences | null
+): Promise<{ html: string; url: string }> {
   const { chromium } = await import("playwright");
   const browser = await chromium.launch({
     headless: true,
@@ -225,14 +219,12 @@ async function fetchHtmlWithBrowser(rawUrl: string, headers: Record<string, stri
   try {
     const context = await browser.newContext({
       userAgent: config.userAgent,
-      locale: "en-NZ"
+      ...(scrapePreferences?.browserLocale?.trim() ? { locale: scrapePreferences.browserLocale.trim() } : {}),
+      ...(scrapePreferences?.browserTimezone?.trim() ? { timezoneId: scrapePreferences.browserTimezone.trim() } : {})
     });
 
     const page = await context.newPage();
-    await page.setExtraHTTPHeaders({
-      "Accept-Language": "en-NZ,en-US;q=0.9,en;q=0.8",
-      ...headers
-    });
+    await page.setExtraHTTPHeaders(buildScrapeHeaders(headers, scrapePreferences));
     await page.goto(rawUrl, {
       waitUntil: "domcontentloaded",
       timeout: config.timeoutSeconds * 1000
@@ -288,6 +280,32 @@ function inferCurrencyFromText(value: string): string {
     return "GBP";
   }
   return "";
+}
+
+function scoreInlineCurrencyMatch(pageHtml: string, startIndex: number, rawText: string): number {
+  const context = pageHtml.slice(Math.max(0, startIndex - 240), Math.min(pageHtml.length, startIndex + 240)).toLowerCase();
+  let score = 0;
+
+  if (/nz\$|nzd|a\$|au\$|aud|us\$|usd|€|eur|£|gbp/i.test(rawText)) {
+    score += 8;
+  } else if (/^\s*\$\s*/.test(rawText)) {
+    score -= 6;
+  }
+
+  if (/base game|buy now|add to cart|pre-purchase|purchase|owned|wishlist|get|checkout/.test(context)) {
+    score += 8;
+  }
+  if (/price|sale price|current price|now available/.test(context)) {
+    score += 4;
+  }
+  if (/save|discount|off\b|coupon|voucher|reward|cashback|xp|points|rating|reviews|star/.test(context)) {
+    score -= 10;
+  }
+  if (/edition upgrade|add-on|dlc|bundle includes/.test(context)) {
+    score -= 4;
+  }
+
+  return score;
 }
 
 function detectGenericPriceCandidate(pageHtml: string, $: cheerio.CheerioAPI): {
@@ -357,35 +375,36 @@ function detectGenericPriceCandidate(pageHtml: string, $: cheerio.CheerioAPI): {
 
   const htmlPatterns = [
     {
-      regex: /(?:Base\s+Game|Buy\s+Now|Add\s+To\s+Cart|Pre-Purchase|Wishlist)[\s\S]{0,400}?((?:NZ\$|A\$|AU\$|US\$|\$|€|£)\s*[0-9]+(?:\.[0-9]{2})?)/i,
+      regex: /(?:Base\s+Game|Buy\s+Now|Add\s+To\s+Cart|Pre-Purchase|Wishlist)[\s\S]{0,400}?((?:NZ\$|A\$|AU\$|US\$|\$|€|£)\s*[0-9]+(?:\.[0-9]{2})?)/gi,
       source: "auto:purchase-text-price",
       score: 14
     },
     {
-      regex: /((?:NZ\$|A\$|AU\$|US\$|\$|€|£)\s*[0-9]+(?:\.[0-9]{2})?)/i,
+      regex: /((?:NZ\$|A\$|AU\$|US\$|\$|€|£)\s*[0-9]+(?:\.[0-9]{2})?)/gi,
       source: "auto:inline-currency-price",
-      score: 4
+      score: -2
     }
   ];
 
   for (const pattern of htmlPatterns) {
-    const match = pattern.regex.exec(pageHtml);
-    if (!match?.[1]) {
-      continue;
-    }
+    for (const match of pageHtml.matchAll(pattern.regex)) {
+      if (!match[1] || typeof match.index !== "number") {
+        continue;
+      }
 
-    try {
-      candidates.push({
-        regex: null,
-        htmlRegex: pattern.regex.source,
-        detectionSource: pattern.source,
-        previewRawText: match[1].trim(),
-        previewPrice: buildPriceExtraction(match[1]).previewPrice,
-        currency: inferCurrencyFromText(match[1]),
-        score: pattern.score
-      });
-    } catch {
-      // ignore unusable candidate
+      try {
+        candidates.push({
+          regex: null,
+          htmlRegex: pattern.regex.source,
+          detectionSource: pattern.source,
+          previewRawText: match[1].trim(),
+          previewPrice: buildPriceExtraction(match[1]).previewPrice,
+          currency: inferCurrencyFromText(match[1]),
+          score: pattern.score + scoreInlineCurrencyMatch(pageHtml, match.index, match[1])
+        });
+      } catch {
+        // ignore unusable candidate
+      }
     }
   }
 
@@ -428,8 +447,37 @@ function logScrapeEvent(event: string, input: Record<string, string | null | und
   console.info(`[scraper:${event}] ${JSON.stringify(payload)}`);
 }
 
-export async function detectTrackedItem(rawUrl: string): Promise<DetectionResult> {
-  const page = await fetchHtml(rawUrl);
+async function fetchHtmlWithPreferences(
+  rawUrl: string,
+  headersJson: string | null,
+  scrapePreferences: ScrapePreferences | null
+): Promise<{
+  html: string;
+  url: string;
+  fetchMode: "http" | "browser";
+}> {
+  const headers = parseHeaders(headersJson);
+  if (!headers.Referer) {
+    const referer = defaultReferer(rawUrl);
+    if (referer) {
+      headers.Referer = referer;
+    }
+  }
+
+  try {
+    const page = await fetchHtmlWithHttp(rawUrl, headers, scrapePreferences);
+    return { ...page, fetchMode: "http" };
+  } catch (error) {
+    if (shouldUseBrowserFallback(error)) {
+      const page = await fetchHtmlWithBrowser(rawUrl, headers, scrapePreferences);
+      return { ...page, fetchMode: "browser" };
+    }
+    throw error;
+  }
+}
+
+export async function detectTrackedItem(rawUrl: string, scrapePreferences: ScrapePreferences | null = null): Promise<DetectionResult> {
+  const page = await fetchHtmlWithPreferences(rawUrl, null, scrapePreferences);
   const $ = cheerio.load(page.html);
   const pageTitle = $("title").first().text().trim() || null;
   const name = $("meta[property='og:title']").attr("content")?.trim()
@@ -498,7 +546,10 @@ export async function detectTrackedItem(rawUrl: string): Promise<DetectionResult
   throw new Error("Could not automatically detect a price on this page yet.");
 }
 
-export async function fetchTrackedItemCheck(item: TrackedItemRecord): Promise<{
+export async function fetchTrackedItemCheck(
+  item: TrackedItemRecord,
+  scrapePreferences: ScrapePreferences | null = null
+): Promise<{
   status: "ok" | "error";
   checkedAt: string;
   price?: string | null;
@@ -507,7 +558,7 @@ export async function fetchTrackedItemCheck(item: TrackedItemRecord): Promise<{
   errorMessage?: string | null;
 }> {
   try {
-    const page = await fetchHtml(item.url, item.headersJson);
+    const page = await fetchHtmlWithPreferences(item.url, item.headersJson, scrapePreferences);
     const rawText = extractPriceText(item, page.html);
     const price = normalizePrice(rawText, item.regex);
     logScrapeEvent("check", {
