@@ -163,9 +163,6 @@ function renderShell(input: {
       padding-top: 1rem;
     }
     .app-nav {
-      position: sticky;
-      top: 0.75rem;
-      z-index: 10;
       padding: 0.7rem 0.85rem;
       border-radius: 22px;
       background: rgba(255, 255, 255, 0.82);
@@ -760,6 +757,76 @@ function renderShell(input: {
       display: grid;
       gap: 0.75rem;
     }
+    .url-entry {
+      gap: 0.9rem;
+    }
+    .url-entry h2 {
+      margin: 0;
+    }
+    .url-entry-field {
+      position: relative;
+      padding: 0.45rem;
+      border-radius: 12px;
+      background: white;
+      border: 1px solid var(--border);
+    }
+    .url-entry-field input {
+      border: 0;
+      background: transparent;
+      padding: 0.75rem 7.3rem 0.75rem 0.8rem;
+    }
+    .url-entry-field input:focus {
+      outline: none;
+    }
+    .url-entry-field:focus-within {
+      box-shadow: 0 0 0 3px var(--accent-soft);
+      border-color: rgba(104, 92, 178, 0.28);
+    }
+    .url-entry-field button {
+      position: absolute;
+      top: 0.45rem;
+      right: 0.45rem;
+      bottom: 0.45rem;
+      transform: none;
+      min-width: 5.4rem;
+      padding: 0 0.85rem;
+      border-radius: 12px;
+    }
+    .url-entry-button-label,
+    .url-entry-button-loading {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.45rem;
+    }
+    .url-entry-button-loading {
+      display: none;
+    }
+    .url-entry.is-submitting .url-entry-field input {
+      opacity: 0.7;
+    }
+    .url-entry.is-submitting .url-entry-field button {
+      cursor: wait;
+    }
+    .url-entry.is-submitting .url-entry-button-label {
+      display: none;
+    }
+    .url-entry.is-submitting .url-entry-button-loading {
+      display: inline-flex;
+    }
+    .spinner {
+      width: 0.95rem;
+      height: 0.95rem;
+      border-radius: 999px;
+      border: 2px solid rgba(255, 255, 255, 0.35);
+      border-top-color: white;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
     label {
       display: grid;
       gap: 0.35rem;
@@ -897,6 +964,10 @@ function renderShell(input: {
         color: var(--ink);
         border-color: rgba(138, 150, 255, 0.18);
       }
+      .url-entry-field {
+        background: rgba(10, 14, 27, 0.9);
+        border-color: rgba(138, 150, 255, 0.18);
+      }
       .pill,
       .button-link.secondary,
       button.secondary,
@@ -981,6 +1052,32 @@ function renderShell(input: {
       } catch {
         // Ignore timezone detection failures in older browsers.
       }
+
+      document.querySelectorAll('form.url-entry').forEach((form) => {
+        if (!(form instanceof HTMLFormElement)) {
+          return;
+        }
+
+        form.addEventListener('submit', () => {
+          if (form.classList.contains('is-submitting')) {
+            return;
+          }
+
+          form.classList.add('is-submitting');
+
+          const urlInput = form.querySelector('input[name="url"]');
+          const submitButton = form.querySelector('button[type="submit"]');
+
+          if (urlInput instanceof HTMLInputElement) {
+            urlInput.readOnly = true;
+          }
+
+          if (submitButton instanceof HTMLButtonElement) {
+            submitButton.disabled = true;
+            submitButton.setAttribute('aria-busy', 'true');
+          }
+        });
+      });
     })();
   </script>
 </body>
@@ -1422,11 +1519,16 @@ export function renderUserDashboard(input: {
         </section>
       ` : ""}
       <section class="panel app-panel app-section">
-        <p class="muted">Paste a product URL. The app will fetch the page and try to detect the price automatically.</p>
-        <form method="post" action="/app/items">
+        <form class="url-entry" method="post" action="/app/items">
           ${renderBrowserContextFields()}
-          <input name="url" type="url" required placeholder="Paste a product URL">
-          <button type="submit">Track item</button>
+          <h2>Paste a product URL</h2>
+          <div class="url-entry-field">
+            <input name="url" type="url" required>
+            <button type="submit">
+              <span class="url-entry-button-label">Track</span>
+              <span class="url-entry-button-loading"><span class="spinner" aria-hidden="true"></span>Loading</span>
+            </button>
+          </div>
         </form>
       </section>
       ${renderItemExplorer(
@@ -1495,12 +1597,17 @@ export function renderOnboardingPage(input: {
         </section>
       ` : ""}
       <section class="panel app-panel app-section">
-        <p class="muted">Paste a product URL. The app will fetch the page and try to detect the price automatically.</p>
-        <form method="post" action="/app/onboarding/item">
+        <form class="url-entry" method="post" action="/app/onboarding/item">
           ${renderBrowserContextFields()}
-          <input name="url" type="url" required placeholder="Paste a product URL">
+          <h2>Paste a product URL</h2>
+          <div class="url-entry-field">
+            <input name="url" type="url" required>
+            <button type="submit">
+              <span class="url-entry-button-label">Track</span>
+              <span class="url-entry-button-loading"><span class="spinner" aria-hidden="true"></span>Loading</span>
+            </button>
+          </div>
           <div class="actions">
-            <button type="submit">Preview item</button>
             <a class="button-link secondary" href="/app">Skip for now</a>
           </div>
         </form>
