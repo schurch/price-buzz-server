@@ -137,7 +137,11 @@ function extractPriceText(item: TrackedItemRecord, html: string): string {
   return node.text().trim();
 }
 
-async function fetchHtml(rawUrl: string, headersJson: string | null = null): Promise<{ html: string; url: string }> {
+async function fetchHtml(rawUrl: string, headersJson: string | null = null): Promise<{
+  html: string;
+  url: string;
+  fetchMode: "http" | "browser";
+}> {
   const headers = parseHeaders(headersJson);
   if (!headers.Referer) {
     const referer = defaultReferer(rawUrl);
@@ -147,10 +151,12 @@ async function fetchHtml(rawUrl: string, headersJson: string | null = null): Pro
   }
 
   try {
-    return await fetchHtmlWithHttp(rawUrl, headers);
+    const page = await fetchHtmlWithHttp(rawUrl, headers);
+    return { ...page, fetchMode: "http" };
   } catch (error) {
     if (shouldUseBrowserFallback(error)) {
-      return fetchHtmlWithBrowser(rawUrl, headers);
+      const page = await fetchHtmlWithBrowser(rawUrl, headers);
+      return { ...page, fetchMode: "browser" };
     }
     throw error;
   }
@@ -415,6 +421,13 @@ function buildDetectionResult(input: {
   };
 }
 
+function logScrapeEvent(event: string, input: Record<string, string | null | undefined>): void {
+  const payload = Object.fromEntries(
+    Object.entries(input).map(([key, value]) => [key, value ?? ""])
+  );
+  console.info(`[scraper:${event}] ${JSON.stringify(payload)}`);
+}
+
 export async function detectTrackedItem(rawUrl: string): Promise<DetectionResult> {
   const page = await fetchHtml(rawUrl);
   const $ = cheerio.load(page.html);
@@ -426,7 +439,7 @@ export async function detectTrackedItem(rawUrl: string): Promise<DetectionResult
   const pageCurrency = detectCurrency(page.html, $);
   const genericCandidate = detectGenericPriceCandidate(page.html, $);
   if (genericCandidate) {
-    return buildDetectionResult({
+    const result = buildDetectionResult({
       url: page.url,
       name,
       pageTitle,
@@ -439,12 +452,22 @@ export async function detectTrackedItem(rawUrl: string): Promise<DetectionResult
       previewRawText: genericCandidate.previewRawText,
       previewPrice: genericCandidate.previewPrice
     });
+    logScrapeEvent("detect", {
+      inputUrl: rawUrl,
+      finalUrl: page.url,
+      fetchMode: page.fetchMode,
+      detectionSource: result.detectionSource,
+      previewRawText: result.previewRawText,
+      previewPrice: result.previewPrice,
+      currency: result.currency
+    });
+    return result;
   }
 
   const jsonLdMatch = /"price"\s*:\s*"?([0-9]+(?:\.\d+)?)"?/i.exec(page.html);
   if (jsonLdMatch) {
     const previewRawText = jsonLdMatch[1];
-    return buildDetectionResult({
+    const result = buildDetectionResult({
       url: page.url,
       name,
       pageTitle,
@@ -454,8 +477,24 @@ export async function detectTrackedItem(rawUrl: string): Promise<DetectionResult
       previewRawText,
       previewPrice: normalizePrice(previewRawText, null)
     });
+    logScrapeEvent("detect", {
+      inputUrl: rawUrl,
+      finalUrl: page.url,
+      fetchMode: page.fetchMode,
+      detectionSource: result.detectionSource,
+      previewRawText: result.previewRawText,
+      previewPrice: result.previewPrice,
+      currency: result.currency
+    });
+    return result;
   }
 
+  logScrapeEvent("detect-miss", {
+    inputUrl: rawUrl,
+    finalUrl: page.url,
+    fetchMode: page.fetchMode,
+    pageTitle
+  });
   throw new Error("Could not automatically detect a price on this page yet.");
 }
 
@@ -471,6 +510,15 @@ export async function fetchTrackedItemCheck(item: TrackedItemRecord): Promise<{
     const page = await fetchHtml(item.url, item.headersJson);
     const rawText = extractPriceText(item, page.html);
     const price = normalizePrice(rawText, item.regex);
+    logScrapeEvent("check", {
+      inputUrl: item.url,
+      finalUrl: page.url,
+      fetchMode: page.fetchMode,
+      detectionSource: item.detectionSource,
+      rawText,
+      price,
+      currency: item.currency
+    });
 
     return {
       status: "ok",
@@ -480,6 +528,11 @@ export async function fetchTrackedItemCheck(item: TrackedItemRecord): Promise<{
       rawText
     };
   } catch (error) {
+    logScrapeEvent("check-error", {
+      inputUrl: item.url,
+      detectionSource: item.detectionSource,
+      errorMessage: error instanceof Error ? error.message : String(error)
+    });
     return {
       status: "error",
       checkedAt: utcNow(),
