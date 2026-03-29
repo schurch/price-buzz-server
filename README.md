@@ -51,6 +51,27 @@ npm run build
 npm start
 ```
 
+## Docker Run
+
+Build the image locally:
+
+```bash
+docker build -t pricebuzz .
+```
+
+Run it locally with your app env file and a bind mount for SQLite data:
+
+```bash
+docker run --rm \
+  --env-file .env \
+  -e HOST=0.0.0.0 \
+  -p 127.0.0.1:4321:4321 \
+  -v "$PWD/data:/app/data" \
+  pricebuzz
+```
+
+The Docker image installs Playwright's Chromium browser in the final runtime image, so browser fallback scraping still works inside the container.
+
 ## Environment
 
 Production-oriented example:
@@ -131,7 +152,7 @@ sudo systemctl restart pricebuzz
 
 ## GitHub Deploys
 
-This repo includes a GitHub Actions workflow at `.github/workflows/deploy.yml` that deploys on every push to `main`.
+This repo includes a GitHub Actions workflow at `.github/workflows/deploy.yml` that builds a Docker image on every push to `main`, pushes it to Docker Hub, copies the deploy files to the server, and tells the server to pull and restart it with Docker Compose.
 
 Required GitHub Actions secrets:
 
@@ -139,23 +160,36 @@ Required GitHub Actions secrets:
 - `DEPLOY_USER`: your SSH user
 - `DEPLOY_PATH`: your deploy path, for example `/home/YOUR_USER/pricebuzz`
 - `DEPLOY_SSH_KEY`: a private SSH key that can log into the server
+- `DOCKER_HUB_USERNAME`: your Docker Hub username
+- `DOCKER_HUB_PASSWORD`: a Docker Hub access token or password
 
 Server prerequisites for that workflow:
 
 - the app directory already exists on the server
 - `.env` already exists on the server and is not managed by the workflow
-- Node 22 is installed via `nvm` for the deploy user
-- `sudo systemctl restart pricebuzz` works for the deploy user without an interactive password prompt
+- Docker and Docker Compose are installed on the server
+- the deploy user can run Docker commands
+- a writable `data/` directory exists in the deploy path
 
 The workflow does this:
 
-1. runs `npm ci`
-2. runs `npm run build`
-3. syncs the repo to the server with `rsync`
-4. runs `npm run build` on the server
-5. restarts the `pricebuzz` systemd service
+1. builds a Docker image
+2. pushes it to Docker Hub
+3. copies `compose.yaml` and `scripts/deploy.sh` to the server
+4. runs the deploy script on the server
+5. pulls the new image with Docker Compose
+6. starts or replaces the running container
 
-Dependencies are not reinstalled on the server on every deploy. If you change `package.json` or `package-lock.json`, run `npm install` manually on the server before or after the deploy.
+Recommended VPS setup:
+
+```bash
+mkdir -p /home/YOUR_USER/pricebuzz/data
+cp .env /home/YOUR_USER/pricebuzz/.env
+cp compose.yaml /home/YOUR_USER/pricebuzz/compose.yaml
+mkdir -p /home/YOUR_USER/pricebuzz/scripts
+```
+
+The checked-in `compose.yaml` expects `IMAGE_NAME` to be set when you run Docker Compose. The workflow sets that automatically.
 
 ## Notes
 

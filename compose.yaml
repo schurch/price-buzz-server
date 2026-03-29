@@ -1,0 +1,13 @@
+services:
+  pricebuzz:
+    image: ${IMAGE_NAME:?set IMAGE_NAME when running docker compose}
+    container_name: pricebuzz
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+    ports:
+      - "127.0.0.1:4321:4321"
+    volumes:
+      - ./data:/app/data
