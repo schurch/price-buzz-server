@@ -219,6 +219,10 @@ function extractCurrencyCode(source: string): string {
   return "";
 }
 
+function hasExplicitCurrencyMarker(source: string): boolean {
+  return /NZ\$|A\$|AU\$|US\$|C\$|S\$|HK\$|\b(?:AUD|CAD|CHF|EUR|GBP|HKD|JPY|NZD|SGD|USD)\b|€|£|¥/i.test(source);
+}
+
 function readCandidateRawText(node: cheerio.Cheerio<any>): {
   raw: string;
   attribute: string | null;
@@ -623,14 +627,23 @@ function scoreInlineCurrencyMatch(pageHtml: string, startIndex: number, rawText:
   if (/base game|buy now|add to cart|pre-purchase|purchase|owned|wishlist|get|checkout/.test(context)) {
     score += 8;
   }
+  if (/offertype["':\s_]*base[_\s-]*game/.test(context)) {
+    score += 18;
+  }
   if (/price|sale price|current price|now available/.test(context)) {
     score += 4;
+  }
+  if (/sellingprice|pricecontainer|productupper|buyingoption|add to bag/.test(context)) {
+    score += 16;
   }
   if (/save|discount|off\b|coupon|voucher|reward|cashback|xp|points|rating|reviews|star/.test(context)) {
     score -= 10;
   }
-  if (/edition upgrade|add-on|dlc|bundle includes/.test(context)) {
-    score -= 4;
+  if (/shipping|free shipping|below\s+(?:nz\$|a\$|au\$|us\$|\$|€|£)|\border\b|navbar|promotion|promo|banner|listitem/.test(context)) {
+    score -= 18;
+  }
+  if (/deluxe edition|edition upgrade|add-on|addon|dlc|bundle includes|offertype["':\s_]*edition|offertype["':\s_]*dlc/.test(context)) {
+    score -= 20;
   }
   if (/other sellers|no featured offers available|buying options|see all buying options/.test(context)) {
     score -= 18;
@@ -644,6 +657,9 @@ function scoreInlineCurrencyMatch(pageHtml: string, startIndex: number, rawText:
 
 function scoreJsonPriceKey(key: string): number {
   const loweredKey = key.toLowerCase();
+  if (loweredKey === "price") {
+    return -10;
+  }
   const hasCurrentSignal = /current|sale|offer|promo|online|member|club/.test(loweredKey);
   const hasPriceSignal = /price/.test(loweredKey);
   const hasGenericValueSignal = /amount|value/.test(loweredKey);
@@ -677,16 +693,22 @@ function scoreJsonContext(pageHtml: string, matchIndex: number, key: string): nu
   const loweredKey = key.toLowerCase();
   let score = 0;
 
-  if (/base game|buy now|add to cart|purchasecta|purchase-cta|checkout/.test(context)) {
+  if (/totalprice|fmtprice|currencycode|discountprice|originalprice/.test(context)) {
+    score += 12;
+  }
+  if (/base game|buy now|add to cart|purchasecta|purchase-cta|checkout|offertype["':\s_]*base[_\s-]*game/.test(context)) {
     score += 10;
   }
   if (/current|sale|offer|price specification|pricecurrency|in stock|available/.test(context) || /current|sale|offer/.test(loweredKey)) {
     score += 6;
   }
+  if (/rewards?|earn\s+\d+%?\s*back|cashback|reward chip|membership discount|subscriber discount|points|xp/.test(context)) {
+    score -= 24;
+  }
   if (/discount|promo|promotion|special offer|voucher|coupon|rewards?/.test(context) || /discount|promo|promotion/.test(loweredKey)) {
     score -= 12;
   }
-  if (/deluxe|upgrade|add-on|addon|dlc|bundle|edition/.test(context) || /deluxe|upgrade|addon|bundle|edition/.test(loweredKey)) {
+  if (/deluxe|upgrade|add-on|addon|dlc|bundle|edition|offertype["':\s_]*edition|offertype["':\s_]*dlc/.test(context) || /deluxe|upgrade|addon|bundle|edition/.test(loweredKey)) {
     score -= 10;
   }
   if (/pricevaliduntil|validuntil|startdate|purchasestateeffectivedate|scheduled|future|upcoming/.test(context) || /validuntil|startdate|future|scheduled/.test(loweredKey)) {
@@ -1087,11 +1109,185 @@ function detectJsonLdPrice(html: string): { previewRawText: string; previewPrice
   } : null;
 }
 
+function normalizeFarmersVariant(variant: string): string {
+  const parts = variant
+    .split(",")
+    .map((part) => part.trim())
+    .map((part) => part.replace(/^[A-Za-z-]+:\s*/i, "").trim())
+    .filter(Boolean);
+
+  return parts.join(" / ");
+}
+
+function detectSpecificProductName(finalUrl: string, html: string, $: cheerio.CheerioAPI, fallbackName: string): string {
+  const canonicalName = $("meta[property='og:title']").attr("content")?.trim()
+    || $("h1").first().text().trim()
+    || fallbackName;
+
+  if (!/farmers\.co\.nz/i.test(finalUrl)) {
+    return canonicalName;
+  }
+
+  const variantMatch = /"variant"\s*:\s*"([^"]+)"/i.exec(html);
+  const normalizedVariant = variantMatch?.[1] ? normalizeFarmersVariant(variantMatch[1]) : "";
+  if (!normalizedVariant) {
+    return canonicalName;
+  }
+
+  const trimmedName = canonicalName.replace(/\s+Range$/i, "").trim();
+  return `${trimmedName} - ${normalizedVariant}`;
+}
+
+function findCapturedCatalogOffers(node: unknown, results: Record<string, unknown>[] = []): Record<string, unknown>[] {
+  if (!node || typeof node !== "object") {
+    return results;
+  }
+
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      findCapturedCatalogOffers(item, results);
+    }
+    return results;
+  }
+
+  const record = node as Record<string, unknown>;
+  const catalogOffer = record.catalogOffer;
+  if (catalogOffer && typeof catalogOffer === "object" && !Array.isArray(catalogOffer)) {
+    results.push(catalogOffer as Record<string, unknown>);
+  }
+
+  for (const value of Object.values(record)) {
+    findCapturedCatalogOffers(value, results);
+  }
+
+  return results;
+}
+
+function extractCapturedOfferPrice(offer: Record<string, unknown>): {
+  previewRawText: string;
+  previewPrice: string;
+  currency: string;
+} | null {
+  const price = offer.price;
+  if (!price || typeof price !== "object" || Array.isArray(price)) {
+    return null;
+  }
+
+  const totalPrice = (price as Record<string, unknown>).totalPrice;
+  if (!totalPrice || typeof totalPrice !== "object" || Array.isArray(totalPrice)) {
+    return null;
+  }
+
+  const totalPriceRecord = totalPrice as Record<string, unknown>;
+  const fmtPrice = totalPriceRecord.fmtPrice;
+  const currencyCode = typeof totalPriceRecord.currencyCode === "string"
+    ? totalPriceRecord.currencyCode.trim().toUpperCase()
+    : "";
+  const decimals = typeof (totalPriceRecord.currencyInfo as { decimals?: unknown } | undefined)?.decimals === "number"
+    ? (totalPriceRecord.currencyInfo as { decimals: number }).decimals
+    : 2;
+
+  if (fmtPrice && typeof fmtPrice === "object" && !Array.isArray(fmtPrice)) {
+    const discountPrice = (fmtPrice as Record<string, unknown>).discountPrice;
+    const originalPrice = (fmtPrice as Record<string, unknown>).originalPrice;
+    for (const candidate of [discountPrice, originalPrice]) {
+      if (typeof candidate === "string" && candidate.trim()) {
+        const previewRawText = candidate.trim();
+        return {
+          previewRawText,
+          previewPrice: buildPriceExtraction(previewRawText).previewPrice,
+          currency: currencyCode
+        };
+      }
+    }
+  }
+
+  for (const candidate of ["discountPrice", "originalPrice"] as const) {
+    const rawValue = totalPriceRecord[candidate];
+    if (typeof rawValue === "number" && Number.isFinite(rawValue) && rawValue > 0) {
+      const converted = (rawValue / 10 ** decimals).toFixed(decimals);
+      return {
+        previewRawText: converted,
+        previewPrice: converted,
+        currency: currencyCode
+      };
+    }
+  }
+
+  return null;
+}
+
+function detectCapturedOfferPrice(
+  html: string,
+  productName: string
+): { previewRawText: string; previewPrice: string; currency: string } | null {
+  const scriptPattern = /<script[^>]+type=["']application\/json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  type Candidate = { previewRawText: string; previewPrice: string; currency: string; score: number };
+  const candidates: Candidate[] = [];
+
+  for (const match of html.matchAll(scriptPattern)) {
+    const rawJson = match[1]?.trim();
+    if (!rawJson) {
+      continue;
+    }
+
+    try {
+      const parsed = JSON.parse(rawJson) as unknown;
+      const offers = findCapturedCatalogOffers(parsed);
+      for (const offer of offers) {
+        const extracted = extractCapturedOfferPrice(offer);
+        if (!extracted) {
+          continue;
+        }
+
+        const offerName = typeof offer.title === "string"
+          ? offer.title.trim()
+          : typeof offer.productSlug === "string"
+            ? offer.productSlug.trim()
+            : productName;
+        const score = 80 + scoreStructuredOfferContext(
+          productName,
+          offerName,
+          offer,
+          extracted.previewPrice
+        );
+
+        candidates.push({
+          ...extracted,
+          score
+        });
+      }
+    } catch {
+      // Ignore malformed JSON blocks and keep scanning.
+    }
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  const winner = candidates[0];
+  return winner ? {
+    previewRawText: winner.previewRawText,
+    previewPrice: winner.previewPrice,
+    currency: winner.currency
+  } : null;
+}
+
 function logScrapeEvent(event: string, input: Record<string, string | null | undefined>): void {
   const payload = Object.fromEntries(
     Object.entries(input).map(([key, value]) => [key, value ?? ""])
   );
   console.info(`[scraper:${event}] ${JSON.stringify(payload)}`);
+}
+
+function shouldTryBrowserForHttpPage(rawUrl: string, page: { html: string; url: string }): {
+  shouldTry: boolean;
+  blockedMessage: string | null;
+} {
+  const pageTitle = /<title[^>]*>(.*?)<\/title>/i.exec(page.html)?.[1]?.trim() ?? "";
+  const blockedMessage = detectBlockedPageMessage(page.html, page.url, pageTitle);
+  return {
+    shouldTry: Boolean(blockedMessage) || shouldUseBrowserFallbackForHtml(rawUrl, page.html, page.url),
+    blockedMessage
+  };
 }
 
 async function fetchHtmlWithPreferences(
@@ -1113,14 +1309,20 @@ async function fetchHtmlWithPreferences(
 
   try {
     const page = await fetchHtmlWithHttp(rawUrl, headers, scrapePreferences);
-    const pageTitle = /<title[^>]*>(.*?)<\/title>/i.exec(page.html)?.[1]?.trim() ?? "";
-    const blockedMessage = detectBlockedPageMessage(page.html, page.url, pageTitle);
-    if (blockedMessage) {
-      throw new AccessBlockedError(blockedMessage);
-    }
-    if (shouldUseBrowserFallbackForHtml(rawUrl, page.html, page.url)) {
-      const browserPage = await fetchHtmlWithBrowser(rawUrl, headers, scrapePreferences);
-      return { ...browserPage, fetchMode: "browser" };
+    const { shouldTry, blockedMessage } = shouldTryBrowserForHttpPage(rawUrl, page);
+    if (shouldTry) {
+      try {
+        const browserPage = await fetchHtmlWithBrowser(rawUrl, headers, scrapePreferences);
+        return { ...browserPage, fetchMode: "browser" };
+      } catch (browserError) {
+        if (browserError instanceof AccessBlockedError) {
+          throw browserError;
+        }
+        if (blockedMessage) {
+          throw new AccessBlockedError(blockedMessage);
+        }
+        throw browserError;
+      }
     }
     return { ...page, fetchMode: "http" };
   } catch (error) {
@@ -1166,7 +1368,8 @@ export async function fetchScrapeDebugResult(
 
   try {
     const httpPage = await fetchHtmlWithHttp(rawUrl, headers, scrapePreferences);
-    if (shouldUseBrowserFallbackForHtml(rawUrl, httpPage.html, httpPage.url)) {
+    const { shouldTry } = shouldTryBrowserForHttpPage(rawUrl, httpPage);
+    if (shouldTry) {
       try {
         const browserPage = await fetchHtmlWithBrowser(rawUrl, headers, scrapePreferences);
         return buildScrapeDebugResult(rawUrl, { ...browserPage, fetchMode: "browser" });
@@ -1213,17 +1416,56 @@ export async function fetchScrapeDebugResult(
 
 export async function detectTrackedItem(rawUrl: string, scrapePreferences: ScrapePreferences | null = null): Promise<DetectionResult> {
   const page = await fetchHtmlWithPreferences(rawUrl, null, scrapePreferences);
-  const $ = cheerio.load(page.html);
+  const result = detectTrackedItemFromHtml(page.url, page.html);
+  logScrapeEvent("detect", {
+    inputUrl: rawUrl,
+    finalUrl: page.url,
+    fetchMode: page.fetchMode,
+    detectionSource: result.detectionSource,
+    previewRawText: result.previewRawText,
+    previewPrice: result.previewPrice,
+    currency: result.currency
+  });
+  return result;
+}
+
+export function detectTrackedItemFromHtml(finalUrl: string, html: string): DetectionResult {
+  const $ = cheerio.load(html);
   const pageTitle = $("title").first().text().trim() || null;
-  const name = $("meta[property='og:title']").attr("content")?.trim()
-    || $("h1").first().text().trim()
-    || pageTitle
-    || page.url;
-  const pageCurrency = detectCurrency(page.html, $);
-  const jsonLdPrice = detectJsonLdPrice(page.html);
-  if (jsonLdPrice) {
-    const result = buildDetectionResult({
-      url: page.url,
+  const blockedMessage = detectBlockedPageMessage(html, finalUrl, pageTitle ?? "");
+  if (blockedMessage) {
+    throw new AccessBlockedError(blockedMessage);
+  }
+  const name = detectSpecificProductName(finalUrl, html, $, pageTitle || finalUrl);
+  const pageCurrency = detectCurrency(html, $);
+  const capturedOfferPrice = detectCapturedOfferPrice(html, name);
+  const genericCandidate = detectGenericPriceCandidate(html, $);
+  const jsonLdPrice = detectJsonLdPrice(html);
+  const capturedResult = capturedOfferPrice ? buildDetectionResult({
+    url: finalUrl,
+    name,
+    pageTitle,
+    currency: capturedOfferPrice.currency || pageCurrency,
+    htmlRegex: "\"catalogOffer\"",
+    detectionSource: "auto:captured-offer-price",
+    previewRawText: capturedOfferPrice.previewRawText,
+    previewPrice: capturedOfferPrice.previewPrice
+  }) : null;
+  const genericResult = genericCandidate ? buildDetectionResult({
+    url: finalUrl,
+    name,
+    pageTitle,
+    selector: genericCandidate.selector ?? null,
+    attribute: genericCandidate.attribute ?? null,
+    regex: genericCandidate.regex ?? null,
+    htmlRegex: genericCandidate.htmlRegex ?? null,
+    currency: genericCandidate.currency || pageCurrency,
+    detectionSource: genericCandidate.detectionSource,
+    previewRawText: genericCandidate.previewRawText,
+    previewPrice: genericCandidate.previewPrice
+  }) : null;
+  const jsonLdResult = jsonLdPrice ? buildDetectionResult({
+      url: finalUrl,
       name,
       pageTitle,
       currency: jsonLdPrice.currency || pageCurrency,
@@ -1231,51 +1473,41 @@ export async function detectTrackedItem(rawUrl: string, scrapePreferences: Scrap
       detectionSource: "auto:json-ld-price",
       previewRawText: jsonLdPrice.previewRawText,
       previewPrice: jsonLdPrice.previewPrice
-    });
-    logScrapeEvent("detect", {
-      inputUrl: rawUrl,
-      finalUrl: page.url,
-      fetchMode: page.fetchMode,
-      detectionSource: result.detectionSource,
-      previewRawText: result.previewRawText,
-      previewPrice: result.previewPrice,
-      currency: result.currency
-    });
-    return result;
-  }
-  const genericCandidate = detectGenericPriceCandidate(page.html, $);
-  if (genericCandidate) {
-    const result = buildDetectionResult({
-      url: page.url,
-      name,
-      pageTitle,
-      selector: genericCandidate.selector ?? null,
-      attribute: genericCandidate.attribute ?? null,
-      regex: genericCandidate.regex ?? null,
-      htmlRegex: genericCandidate.htmlRegex ?? null,
-      currency: genericCandidate.currency || pageCurrency,
-      detectionSource: genericCandidate.detectionSource,
-      previewRawText: genericCandidate.previewRawText,
-      previewPrice: genericCandidate.previewPrice
-    });
-    logScrapeEvent("detect", {
-      inputUrl: rawUrl,
-      finalUrl: page.url,
-      fetchMode: page.fetchMode,
-      detectionSource: result.detectionSource,
-      previewRawText: result.previewRawText,
-      previewPrice: result.previewPrice,
-      currency: result.currency
-    });
-    return result;
+    }) : null;
+
+  if (capturedResult) {
+    return capturedResult;
   }
 
-  logScrapeEvent("detect-miss", {
-    inputUrl: rawUrl,
-    finalUrl: page.url,
-    fetchMode: page.fetchMode,
-    pageTitle
-  });
+  if (genericResult && jsonLdResult) {
+    const genericHasExplicitCurrency = hasExplicitCurrencyMarker(genericResult.previewRawText);
+    const jsonLdHasExplicitCurrency = hasExplicitCurrencyMarker(jsonLdResult.previewRawText)
+      || isSupportedCurrencyCode(jsonLdResult.currency);
+    const pageHasExplicitCurrency = Boolean(pageCurrency);
+    const genericMatchesPageCurrency = pageHasExplicitCurrency && genericResult.currency === pageCurrency;
+    const jsonLdMatchesPageCurrency = pageHasExplicitCurrency && jsonLdResult.currency === pageCurrency;
+    if (
+      genericHasExplicitCurrency
+      && genericResult.currency
+      && jsonLdHasExplicitCurrency
+      && jsonLdResult.currency
+      && genericResult.currency !== jsonLdResult.currency
+    ) {
+      return genericResult;
+    }
+    if (genericMatchesPageCurrency && !jsonLdMatchesPageCurrency) {
+      return genericResult;
+    }
+    return jsonLdResult;
+  }
+
+  if (jsonLdResult) {
+    return jsonLdResult;
+  }
+
+  if (genericResult) {
+    return genericResult;
+  }
   throw new Error("Could not automatically detect a price on this page yet.");
 }
 
