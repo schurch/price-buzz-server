@@ -1,4 +1,10 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import dotenv from "dotenv";
+
+const configDir = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(configDir, "../..");
+dotenv.config({ path: path.resolve(repoRoot, ".env") });
 
 function integerFromEnv(name: string, fallback: number): number {
   const value = process.env[name];
@@ -14,7 +20,7 @@ export const config = {
   host: process.env.HOST ?? "127.0.0.1",
   port: integerFromEnv("PORT", 4321),
   appBaseUrl: (process.env.APP_BASE_URL ?? "").trim().replace(/\/+$/, ""),
-  databasePath: path.resolve(process.env.DATABASE_PATH ?? "./data/app.db"),
+  databasePath: path.resolve(repoRoot, process.env.DATABASE_PATH ?? "data/app.db"),
   checkIntervalMinutes: integerFromEnv("CHECK_INTERVAL_MINUTES", 360),
   timeoutSeconds: integerFromEnv("PRICE_TRACKER_TIMEOUT", 20),
   userAgent:

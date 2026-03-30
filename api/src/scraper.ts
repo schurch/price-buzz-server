@@ -49,6 +49,23 @@ function parseHeaders(headersJson: string | null): Record<string, string> {
   }
 }
 
+const ISO_CURRENCY_CODES = new Set([
+  "AUD",
+  "CAD",
+  "CHF",
+  "EUR",
+  "GBP",
+  "HKD",
+  "JPY",
+  "NZD",
+  "SGD",
+  "USD"
+]);
+
+function isSupportedCurrencyCode(value: string | null | undefined): value is string {
+  return Boolean(value && ISO_CURRENCY_CODES.has(value.toUpperCase()));
+}
+
 function defaultReferer(rawUrl: string): string | null {
   try {
     const url = new URL(rawUrl);
@@ -174,17 +191,17 @@ function isPlausiblePriceText(rawText: string): boolean {
 function extractCurrencyCode(source: string): string {
   const compact = source.replace(/\s+/g, " ").trim();
   const priceCurrencyMatch = /(?:pricecurrency|currency)["']?\s*[:=]\s*["']([A-Z]{3})["']/i.exec(compact);
-  if (priceCurrencyMatch?.[1]) {
+  if (isSupportedCurrencyCode(priceCurrencyMatch?.[1])) {
     return priceCurrencyMatch[1].toUpperCase();
   }
 
   const leadingCodeMatch = /\b([A-Z]{3})\s*[0-9]+(?:\.[0-9]{2})?\b/.exec(compact);
-  if (leadingCodeMatch?.[1]) {
+  if (isSupportedCurrencyCode(leadingCodeMatch?.[1])) {
     return leadingCodeMatch[1].toUpperCase();
   }
 
   const trailingCodeMatch = /\b[0-9]+(?:\.[0-9]{2})?\s*([A-Z]{3})\b/.exec(compact);
-  if (trailingCodeMatch?.[1]) {
+  if (isSupportedCurrencyCode(trailingCodeMatch?.[1])) {
     return trailingCodeMatch[1].toUpperCase();
   }
 
@@ -576,13 +593,13 @@ async function fetchHtmlWithBrowser(
 function detectCurrency(html: string, $: cheerio.CheerioAPI): string {
   const metaCurrency = $("meta[property='product:price:currency']").attr("content")
     || $("meta[itemprop='priceCurrency']").attr("content");
-  if (metaCurrency) {
+  if (isSupportedCurrencyCode(metaCurrency)) {
     return metaCurrency.trim().toUpperCase();
   }
 
   const jsonCurrencyMatch = /"priceCurrency"\s*:\s*"([A-Z]{3})"/i.exec(html)
     || /"currency"\s*:\s*"([A-Z]{3})"/i.exec(html);
-  if (jsonCurrencyMatch?.[1]) {
+  if (isSupportedCurrencyCode(jsonCurrencyMatch?.[1])) {
     return jsonCurrencyMatch[1].toUpperCase();
   }
 

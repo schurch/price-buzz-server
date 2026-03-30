@@ -1,22 +1,23 @@
 # PriceBuzz
 
-Minimal standalone TypeScript price tracking app for a single server.
+Minimal standalone price tracking app with a split frontend and backend in one repo.
 
-The app is intentionally small:
+Repo layout:
 
-- one Node.js process
-- one SQLite database file
-- one server-rendered web UI
-- one in-process scheduler
-- one `systemd` service in production
+- `api/`: Fastify API, SQLite access, scraping, notifications, scheduler
+- `web/`: React app built with Vite for fast local iteration and hot reload
+
+In production, the Fastify API serves the built React app on the same domain and same origin as `/api/*`.
 
 ## Stack
 
-- Node.js 20+
+- Node.js 22+
 - TypeScript
 - Fastify
+- React
+- Vite
 - SQLite via `better-sqlite3`
-- `cheerio` for HTML parsing
+- `cheerio` and Playwright for scraping
 
 ## What It Does
 
@@ -24,14 +25,15 @@ The app is intentionally small:
 - checks prices on a schedule
 - keeps price history
 - supports users, sessions, and admin roles
-- collects first and last name during signup
-- separates the public site, user app, and platform admin
 - verifies account email addresses and uses the account email as the default alert recipient
-- sends new users through a dedicated onboarding step to add their first product URL, with automatic price detection
+- lets new users sign up and go straight into the app
+- uses the dashboard empty state as the first-item flow
 - lets users add more product URLs later from the dashboard
 - sends price-drop alerts through email or Telegram when configured
 
 ## Local Development
+
+Install dependencies and start both the API and web dev servers:
 
 ```bash
 npm install
@@ -39,9 +41,31 @@ cp .env.example .env
 npm run dev
 ```
 
-The app runs on `http://localhost:4321` by default.
+Default local ports:
 
-For local email verification links, set `APP_BASE_URL=http://127.0.0.1:4321` in your local `.env`.
+- web: `http://127.0.0.1:5173`
+- api: `http://127.0.0.1:4321`
+
+The Vite dev server proxies `/api` to the Fastify API, so the frontend always talks to `/api/...`.
+
+Useful individual commands:
+
+```bash
+npm run dev:api
+npm run dev:web
+npm run build
+npm start
+```
+
+`npm start` runs the built API, which serves the built `web/dist` bundle if it exists.
+
+For local email verification links, set:
+
+```bash
+APP_BASE_URL=http://127.0.0.1:4321
+```
+
+That matches the production serving shape, where Fastify is the single public origin.
 
 ## Production Run
 
@@ -92,43 +116,11 @@ TELEGRAM_BOT_TOKEN=
 TELEGRAM_BOT_USERNAME=
 ```
 
-For local development, the most important override is:
-
-```bash
-APP_BASE_URL=http://127.0.0.1:4321
-```
-
 Scrape locale is not configured app-wide. PriceBuzz captures browser language and timezone from the user session and reuses that per user for future checks.
 
 Email alerts require `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, and `APP_BASE_URL` so the app can generate verification links. Telegram alerts require `TELEGRAM_BOT_TOKEN`. For the smoothest connect flow, also set `TELEGRAM_BOT_USERNAME`, then users can generate shareable bot links instead of entering chat IDs manually.
 
-For Resend API, the typical setup is:
-
-```bash
-RESEND_API_KEY=re_xxxxxxxxx
-RESEND_FROM_EMAIL=alerts@pricebuzz.app
-```
-
-Replace `re_xxxxxxxxx` with your real Resend API key.
-
 If you want the app to create your initial admin account automatically, set `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD` before the first startup.
-
-## Deploy Without Docker
-
-1. Install Node.js 20+ on the server.
-2. Clone the repo into your app directory, for example `/home/YOUR_USER/pricebuzz`.
-3. Create `.env`.
-4. Run `npm install`.
-5. Run `npm run build`.
-6. Copy `systemd/pricebuzz.service` to `/etc/systemd/system/pricebuzz.service`.
-7. The checked-in unit is a template. Update `WorkingDirectory`, `EnvironmentFile`, and `ExecStart` to match your deploy path and your Node 22 binary.
-8. Enable and start the service.
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now pricebuzz
-sudo systemctl status pricebuzz
-```
 
 ## Reverse Proxy
 
@@ -149,53 +141,13 @@ cd /home/YOUR_USER/pricebuzz
 git pull
 npm install
 npm run build
-sudo systemctl restart pricebuzz
+docker compose pull
+docker compose up -d
 ```
-
-## GitHub Deploys
-
-This repo includes a GitHub Actions workflow at `.github/workflows/deploy.yml` that builds a Docker image on every push to `main`, pushes it to Docker Hub, copies the deploy files to the server, and tells the server to pull and restart it with Docker Compose.
-
-Required GitHub Actions secrets:
-
-- `DEPLOY_HOST`: your server hostname or IP
-- `DEPLOY_USER`: your SSH user
-- `DEPLOY_PATH`: your deploy path, for example `/home/YOUR_USER/pricebuzz`
-- `DEPLOY_SSH_KEY`: a private SSH key that can log into the server
-- `DOCKER_HUB_USERNAME`: your Docker Hub username
-- `DOCKER_HUB_PASSWORD`: a Docker Hub access token or password
-
-Server prerequisites for that workflow:
-
-- the app directory already exists on the server
-- `.env` already exists on the server and is not managed by the workflow
-- Docker and Docker Compose are installed on the server
-- the deploy user can run Docker commands
-- a writable `data/` directory exists in the deploy path
-
-The workflow does this:
-
-1. builds a Docker image
-2. pushes it to Docker Hub
-3. copies `compose.yaml` and `scripts/deploy.sh` to the server
-4. runs the deploy script on the server
-5. pulls the new image with Docker Compose
-6. starts or replaces the running container
-
-Recommended VPS setup:
-
-```bash
-mkdir -p /home/YOUR_USER/pricebuzz/data
-cp .env /home/YOUR_USER/pricebuzz/.env
-cp compose.yaml /home/YOUR_USER/pricebuzz/compose.yaml
-mkdir -p /home/YOUR_USER/pricebuzz/scripts
-```
-
-The checked-in `compose.yaml` expects `IMAGE_NAME` to be set when you run Docker Compose. The workflow sets that automatically.
 
 ## Notes
 
 - Normal signups are regular users.
 - Platform admin access comes from the bootstrap admin env vars.
-- After signup, users land on an onboarding screen where they can add their first tracked item or skip to the dashboard.
+- There is no dedicated onboarding screen anymore.
 - Automatic price detection currently tries common ecommerce selectors, metadata tags, and JSON-LD price data before saving a tracked item.
