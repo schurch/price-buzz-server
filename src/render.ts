@@ -3,6 +3,7 @@ import type {
   DetectionResult,
   NotificationChannelRecord,
   PlatformTrackedItem,
+  ScrapeDebugResult,
   TelegramLinkTokenRecord,
   TrackedItemWithHistory,
   UserRecord,
@@ -874,6 +875,26 @@ function renderShell(input: {
     .good {
       color: var(--good);
     }
+    .copy-toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+    .copy-status {
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+    .debug-output {
+      width: 100%;
+      min-height: 22rem;
+      resize: vertical;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 0.82rem;
+      line-height: 1.45;
+      white-space: pre;
+    }
     .url {
       overflow-wrap: anywhere;
       word-break: break-word;
@@ -1075,6 +1096,41 @@ function renderShell(input: {
           if (submitButton instanceof HTMLButtonElement) {
             submitButton.disabled = true;
             submitButton.setAttribute('aria-busy', 'true');
+          }
+        });
+      });
+
+      document.querySelectorAll('[data-copy-target]').forEach((button) => {
+        if (!(button instanceof HTMLButtonElement)) {
+          return;
+        }
+
+        button.addEventListener('click', async () => {
+          const targetSelector = button.dataset.copyTarget;
+          if (!targetSelector) {
+            return;
+          }
+
+          const target = document.querySelector(targetSelector);
+          const text = target instanceof HTMLTextAreaElement
+            ? target.value
+            : target?.textContent ?? '';
+
+          if (!text) {
+            return;
+          }
+
+          try {
+            await navigator.clipboard.writeText(text);
+            const status = button.parentElement?.querySelector('[data-copy-status]');
+            if (status instanceof HTMLElement) {
+              status.textContent = 'Copied';
+            }
+          } catch {
+            const status = button.parentElement?.querySelector('[data-copy-status]');
+            if (status instanceof HTMLElement) {
+              status.textContent = 'Copy failed';
+            }
           }
         });
       });
@@ -1714,6 +1770,7 @@ export function renderPlatformAdminPage(input: {
   user: UserRecord;
   users: UserWithCounts[];
   items: PlatformTrackedItem[];
+  scrapeDebug?: ScrapeDebugResult | null;
   notice?: string | null;
   error?: string | null;
 }): string {
@@ -1755,6 +1812,17 @@ export function renderPlatformAdminPage(input: {
       </section>
       <section class="forms app-section" style="grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));">
         <div class="panel app-panel">
+          <h2>Scrape HTML debug</h2>
+          <p class="muted">Fetch a URL through the server scraper and inspect the exact HTML and final URL the app sees.</p>
+          <form method="post" action="/admin/scrape-debug">
+            ${renderBrowserContextFields()}
+            <label>URL
+              <input name="url" type="url" required value="${escapeHtml(input.scrapeDebug?.inputUrl ?? "")}">
+            </label>
+            <button type="submit">Fetch HTML</button>
+          </form>
+        </div>
+        <div class="panel app-panel">
           <h2>Test email notifications</h2>
           <p class="muted">Send a direct test email through the configured Resend account. You can send to one or many recipients.</p>
           <form method="post" action="/admin/test/email">
@@ -1775,6 +1843,36 @@ export function renderPlatformAdminPage(input: {
           </form>
         </div>
       </section>
+      ${input.scrapeDebug ? `
+        <section class="panel app-panel app-section">
+          <h2>Scrape debug result</h2>
+          <dl class="metric-grid">
+            <div>
+              <dt>Fetch mode</dt>
+              <dd>${escapeHtml(input.scrapeDebug.fetchMode ?? "n/a")}</dd>
+            </div>
+            <div>
+              <dt>Page title</dt>
+              <dd>${escapeHtml(input.scrapeDebug.pageTitle ?? "n/a")}</dd>
+            </div>
+            <div>
+              <dt>HTML size</dt>
+              <dd>${escapeHtml(input.scrapeDebug.htmlBytes?.toLocaleString("en-NZ") ?? "0")} bytes</dd>
+            </div>
+          </dl>
+          <p class="muted url">Final URL: ${escapeHtml(input.scrapeDebug.finalUrl ?? "n/a")}</p>
+          ${input.scrapeDebug.blockedMessage ? `<p class="notice error">${escapeHtml(input.scrapeDebug.blockedMessage)}</p>` : ""}
+          ${input.scrapeDebug.errorMessage && !input.scrapeDebug.html ? `<p class="notice error">${escapeHtml(input.scrapeDebug.errorMessage)}</p>` : ""}
+          <div class="copy-toolbar">
+            <strong>HTML output</strong>
+            <div class="actions">
+              <span class="copy-status" data-copy-status></span>
+              <button class="secondary" type="button" data-copy-target="#scrape-debug-html">Copy HTML</button>
+            </div>
+          </div>
+          <textarea id="scrape-debug-html" class="debug-output" readonly spellcheck="false">${escapeHtml(input.scrapeDebug.html ?? "")}</textarea>
+        </section>
+      ` : ""}
       <section class="panel app-panel app-section">
         <h2>Registered users</h2>
         <table class="compact-table">

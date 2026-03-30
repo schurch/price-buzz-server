@@ -8,7 +8,7 @@ import { config } from "./config.js";
 import { AppDb } from "./db.js";
 import { NotificationService } from "./notifications.js";
 import { renderAuthPage, renderLandingPage, renderOnboardingPage, renderPlatformAdminPage, renderUserAdminPage, renderUserDashboard } from "./render.js";
-import { detectTrackedItem } from "./scraper.js";
+import { detectTrackedItem, fetchScrapeDebugResult } from "./scraper.js";
 import { TrackerService } from "./tracker.js";
 import type { ScrapePreferences, UserRecord } from "./types.js";
 
@@ -717,6 +717,38 @@ app.post("/admin/test/telegram", async (request, reply) => {
   }
 
   reply.redirect("/admin");
+});
+
+app.post("/admin/scrape-debug", async (request, reply) => {
+  const user = requireAdmin(request, reply);
+  if (!user) {
+    return;
+  }
+
+  const body = request.body as Record<string, string | undefined>;
+  const url = body.url?.trim() ?? "";
+
+  if (!url) {
+    reply.type("text/html").send(renderPlatformAdminPage({
+      user,
+      users: db.listUsersWithCounts(),
+      items: db.listPlatformTrackedItems(),
+      error: "Provide a URL to fetch."
+    }));
+    return;
+  }
+
+  const scrapePreferences = readScrapePreferences(request, body);
+  const scrapeDebug = await fetchScrapeDebugResult(url, scrapePreferences);
+
+  reply.type("text/html").send(renderPlatformAdminPage({
+    user,
+    users: db.listUsersWithCounts(),
+    items: db.listPlatformTrackedItems(),
+    scrapeDebug,
+    notice: scrapeDebug.html ? "Fetched the page through the scraper pipeline." : null,
+    error: scrapeDebug.html ? null : scrapeDebug.errorMessage ?? scrapeDebug.blockedMessage ?? null
+  }));
 });
 
 function startScheduler(): void {

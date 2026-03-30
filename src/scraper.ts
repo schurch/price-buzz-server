@@ -1,7 +1,7 @@
 import * as cheerio from "cheerio";
 import { config } from "./config.js";
 import { utcNow } from "./utils.js";
-import type { DetectionResult, ScrapePreferences, TrackedItemRecord } from "./types.js";
+import type { DetectionResult, ScrapeDebugResult, ScrapePreferences, TrackedItemRecord } from "./types.js";
 
 const COMMON_PRICE_SELECTORS = [
   "meta[property='product:price:amount']",
@@ -962,6 +962,82 @@ async function fetchHtmlWithPreferences(
       return { ...page, fetchMode: "browser" };
     }
     throw error;
+  }
+}
+
+function buildScrapeDebugResult(
+  inputUrl: string,
+  page: { html: string; url: string; fetchMode: "http" | "browser" }
+): ScrapeDebugResult {
+  const pageTitle = /<title[^>]*>(.*?)<\/title>/i.exec(page.html)?.[1]?.trim() || null;
+  return {
+    inputUrl,
+    finalUrl: page.url,
+    fetchMode: page.fetchMode,
+    pageTitle,
+    blockedMessage: detectBlockedPageMessage(page.html, page.url, pageTitle ?? ""),
+    errorMessage: null,
+    html: page.html,
+    htmlBytes: Buffer.byteLength(page.html, "utf8")
+  };
+}
+
+export async function fetchScrapeDebugResult(
+  rawUrl: string,
+  scrapePreferences: ScrapePreferences | null = null
+): Promise<ScrapeDebugResult> {
+  const headers = parseHeaders(null);
+  if (!headers.Referer) {
+    const referer = defaultReferer(rawUrl);
+    if (referer) {
+      headers.Referer = referer;
+    }
+  }
+
+  try {
+    const httpPage = await fetchHtmlWithHttp(rawUrl, headers, scrapePreferences);
+    if (shouldUseBrowserFallbackForHtml(rawUrl, httpPage.html, httpPage.url)) {
+      try {
+        const browserPage = await fetchHtmlWithBrowser(rawUrl, headers, scrapePreferences);
+        return buildScrapeDebugResult(rawUrl, { ...browserPage, fetchMode: "browser" });
+      } catch (browserError) {
+        return {
+          ...buildScrapeDebugResult(rawUrl, { ...httpPage, fetchMode: "http" }),
+          errorMessage: browserError instanceof Error ? browserError.message : String(browserError)
+        };
+      }
+    }
+
+    return buildScrapeDebugResult(rawUrl, { ...httpPage, fetchMode: "http" });
+  } catch (error) {
+    if (shouldUseBrowserFallback(error)) {
+      try {
+        const browserPage = await fetchHtmlWithBrowser(rawUrl, headers, scrapePreferences);
+        return buildScrapeDebugResult(rawUrl, { ...browserPage, fetchMode: "browser" });
+      } catch (browserError) {
+        return {
+          inputUrl: rawUrl,
+          finalUrl: null,
+          fetchMode: null,
+          pageTitle: null,
+          blockedMessage: null,
+          errorMessage: browserError instanceof Error ? browserError.message : String(browserError),
+          html: null,
+          htmlBytes: null
+        };
+      }
+    }
+
+    return {
+      inputUrl: rawUrl,
+      finalUrl: null,
+      fetchMode: null,
+      pageTitle: null,
+      blockedMessage: error instanceof AccessBlockedError ? error.message : null,
+      errorMessage: error instanceof Error ? error.message : String(error),
+      html: null,
+      htmlBytes: null
+    };
   }
 }
 
