@@ -66,7 +66,8 @@ function extractBestNumericToken(source: string): string | null {
 
   const preferredPatterns = [
     /(?:NZ\$|A\$|AU\$|US\$|\$|€|£)\s*([0-9]+(?:\.[0-9]{2})?)/i,
-    /([0-9]+(?:\.[0-9]{2})?)\s*(?:NZD|AUD|USD|EUR|GBP)\b/i,
+    /([0-9]+(?:\.[0-9]{2})?)\s*(?:[A-Z]{3})\b/i,
+    /(?:[A-Z]{3})\s*([0-9]+(?:\.[0-9]{2})?)/i,
     /price[^\d]{0,12}([0-9]+(?:\.[0-9]{2})?)/i,
     /sale[^\d]{0,12}([0-9]+(?:\.[0-9]{2})?)/i,
     /now[^\d]{0,12}([0-9]+(?:\.[0-9]{2})?)/i
@@ -151,7 +152,7 @@ function buildPriceExtraction(rawText: string): { previewPrice: string; regex: s
 function isPlausiblePriceText(rawText: string): boolean {
   const compact = rawText.replace(/\s+/g, " ").trim();
   const normalized = compact.replaceAll(",", "");
-  const explicitCurrency = /NZ\$|A\$|AU\$|US\$|USD|NZD|AUD|EUR|GBP|€|£/i.test(compact);
+  const explicitCurrency = /NZ\$|A\$|AU\$|US\$|\b[A-Z]{3}\b|€|£/i.test(compact);
   const bareDollar = /^\$\s*/.test(compact);
   const numericParts = normalized.match(/\d+/g) ?? [];
   if (numericParts.length === 0) {
@@ -168,6 +169,37 @@ function isPlausiblePriceText(rawText: string): boolean {
   }
 
   return true;
+}
+
+function extractCurrencyCode(source: string): string {
+  const compact = source.replace(/\s+/g, " ").trim();
+  const priceCurrencyMatch = /(?:pricecurrency|currency)["']?\s*[:=]\s*["']([A-Z]{3})["']/i.exec(compact);
+  if (priceCurrencyMatch?.[1]) {
+    return priceCurrencyMatch[1].toUpperCase();
+  }
+
+  const leadingCodeMatch = /\b([A-Z]{3})\s*[0-9]+(?:\.[0-9]{2})?\b/.exec(compact);
+  if (leadingCodeMatch?.[1]) {
+    return leadingCodeMatch[1].toUpperCase();
+  }
+
+  const trailingCodeMatch = /\b[0-9]+(?:\.[0-9]{2})?\s*([A-Z]{3})\b/.exec(compact);
+  if (trailingCodeMatch?.[1]) {
+    return trailingCodeMatch[1].toUpperCase();
+  }
+
+  if (/NZ\$|NZD/i.test(compact)) return "NZD";
+  if (/A\$|AU\$|AUD/i.test(compact)) return "AUD";
+  if (/US\$|USD/i.test(compact)) return "USD";
+  if (/C\$|CAD/i.test(compact)) return "CAD";
+  if (/S\$|SGD/i.test(compact)) return "SGD";
+  if (/HK\$|HKD/i.test(compact)) return "HKD";
+  if (/¥|JPY/i.test(compact)) return "JPY";
+  if (/CHF/i.test(compact)) return "CHF";
+  if (/€|EUR/i.test(compact)) return "EUR";
+  if (/£|GBP/i.test(compact)) return "GBP";
+
+  return "";
 }
 
 function readCandidateRawText(node: cheerio.Cheerio<any>): {
@@ -548,46 +580,24 @@ function detectCurrency(html: string, $: cheerio.CheerioAPI): string {
     return metaCurrency.trim().toUpperCase();
   }
 
-  if (/NZ\$|NZD/.test(html)) {
-    return "NZD";
-  }
-  if (/A\$|AU\$|AUD/.test(html)) {
-    return "AUD";
-  }
-  if (/AU\$|AUD/.test(html)) {
-    return "AUD";
-  }
-  if (/\$/.test(html)) {
-    return "USD";
+  const jsonCurrencyMatch = /"priceCurrency"\s*:\s*"([A-Z]{3})"/i.exec(html)
+    || /"currency"\s*:\s*"([A-Z]{3})"/i.exec(html);
+  if (jsonCurrencyMatch?.[1]) {
+    return jsonCurrencyMatch[1].toUpperCase();
   }
 
-  return "";
+  return extractCurrencyCode(html);
 }
 
 function inferCurrencyFromText(value: string): string {
-  if (/NZ\$|NZD/i.test(value)) {
-    return "NZD";
-  }
-  if (/A\$|AU\$|AUD/i.test(value)) {
-    return "AUD";
-  }
-  if (/US\$|USD/i.test(value)) {
-    return "USD";
-  }
-  if (/€|EUR/i.test(value)) {
-    return "EUR";
-  }
-  if (/£|GBP/i.test(value)) {
-    return "GBP";
-  }
-  return "";
+  return extractCurrencyCode(value);
 }
 
 function scoreInlineCurrencyMatch(pageHtml: string, startIndex: number, rawText: string): number {
   const context = pageHtml.slice(Math.max(0, startIndex - 240), Math.min(pageHtml.length, startIndex + 240)).toLowerCase();
   let score = 0;
 
-  if (/nz\$|nzd|a\$|au\$|aud|us\$|usd|€|eur|£|gbp/i.test(rawText)) {
+  if (/nz\$|nzd|a\$|au\$|aud|us\$|usd|c\$|cad|s\$|sgd|hk\$|hkd|¥|jpy|chf|€|eur|£|gbp/i.test(rawText)) {
     score += 8;
   } else if (/^\s*\$\s*/.test(rawText)) {
     score -= 6;
@@ -604,6 +614,12 @@ function scoreInlineCurrencyMatch(pageHtml: string, startIndex: number, rawText:
   }
   if (/edition upgrade|add-on|dlc|bundle includes/.test(context)) {
     score -= 4;
+  }
+  if (/other sellers|no featured offers available|buying options|see all buying options/.test(context)) {
+    score -= 18;
+  }
+  if (/\boption from\b|\bfrom \$|\bfrom [a-z]{3}\b/.test(context)) {
+    score -= 14;
   }
 
   return score;
@@ -637,6 +653,133 @@ function scoreJsonPriceKey(key: string): number {
     return -12;
   }
   return 0;
+}
+
+function scoreJsonContext(pageHtml: string, matchIndex: number, key: string): number {
+  const context = pageHtml.slice(Math.max(0, matchIndex - 320), Math.min(pageHtml.length, matchIndex + 320)).toLowerCase();
+  const loweredKey = key.toLowerCase();
+  let score = 0;
+
+  if (/base game|buy now|add to cart|purchasecta|purchase-cta|checkout/.test(context)) {
+    score += 10;
+  }
+  if (/current|sale|offer|price specification|pricecurrency|in stock|available/.test(context) || /current|sale|offer/.test(loweredKey)) {
+    score += 6;
+  }
+  if (/discount|promo|promotion|special offer|voucher|coupon|rewards?/.test(context) || /discount|promo|promotion/.test(loweredKey)) {
+    score -= 12;
+  }
+  if (/deluxe|upgrade|add-on|addon|dlc|bundle|edition/.test(context) || /deluxe|upgrade|addon|bundle|edition/.test(loweredKey)) {
+    score -= 10;
+  }
+  if (/pricevaliduntil|validuntil|startdate|purchasestateeffectivedate|scheduled|future|upcoming/.test(context) || /validuntil|startdate|future|scheduled/.test(loweredKey)) {
+    score -= 16;
+  }
+  if (/was|original|regular|before|compare/.test(context) || /was|original|regular|before|compare/.test(loweredKey)) {
+    score -= 16;
+  }
+  if (/other sellers|no featured offers available|buying options|see all buying options/.test(context)) {
+    score -= 22;
+  }
+  if (/\bolpmessage\b|\boption from\b|\bfrom \$|\bfrom [a-z]{3}\b/.test(context) || /olp|option/.test(loweredKey)) {
+    score -= 16;
+  }
+
+  return score;
+}
+
+function parseIsoDate(value: unknown): number | null {
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
+  }
+
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function scoreOfferTiming(offer: Record<string, unknown>): number {
+  const now = Date.now();
+  let score = 0;
+
+  const validFrom = parseIsoDate(offer.priceValidFrom)
+    ?? parseIsoDate(offer.validFrom)
+    ?? parseIsoDate(offer.startDate)
+    ?? parseIsoDate(offer.startDateTime)
+    ?? parseIsoDate(offer.effectiveDate)
+    ?? parseIsoDate(offer.purchaseStateEffectiveDate);
+  const validUntil = parseIsoDate(offer.priceValidUntil)
+    ?? parseIsoDate(offer.validUntil)
+    ?? parseIsoDate(offer.endDate)
+    ?? parseIsoDate(offer.endDateTime)
+    ?? parseIsoDate(offer.expiryDate)
+    ?? parseIsoDate(offer.expirationDate);
+
+  if (validFrom !== null) {
+    if (validFrom > now + 60_000) {
+      score -= 40;
+    } else {
+      score += 4;
+    }
+  }
+
+  if (validUntil !== null) {
+    if (validUntil < now - 60_000) {
+      score -= 24;
+    } else {
+      score += 2;
+    }
+  }
+
+  return score;
+}
+
+function scoreStructuredOfferContext(
+  productName: string,
+  candidateName: string,
+  offer: Record<string, unknown>,
+  rawCandidate: string
+): number {
+  let score = 0;
+  const loweredProductName = productName.trim().toLowerCase();
+  const loweredCandidateName = candidateName.trim().toLowerCase();
+  const offerContext = JSON.stringify(offer).toLowerCase();
+  const numericValue = Number.parseFloat(rawCandidate);
+
+  score += scoreOfferTiming(offer);
+
+  if (loweredProductName && loweredCandidateName) {
+    if (loweredCandidateName === loweredProductName) {
+      score += 12;
+    } else if (loweredCandidateName.includes(loweredProductName) || loweredProductName.includes(loweredCandidateName)) {
+      score += 5;
+    } else {
+      score -= 8;
+    }
+  }
+
+  if (/base game/.test(offerContext)) {
+    score += 10;
+  }
+  if (/deluxe|upgrade|add-on|addon|dlc|bundle|edition/.test(loweredCandidateName) || /deluxe|upgrade|add-on|addon|dlc|bundle|edition/.test(offerContext)) {
+    score -= 12;
+  }
+  if (/sale|discount|promo|promotion|special offer|deal/.test(offerContext)) {
+    score -= 8;
+  }
+  if (/scheduled|upcoming|future|prepurchase|pre-order|preorder|coming soon/.test(offerContext)) {
+    score -= 14;
+  }
+  if (/in stock|instock|available|active/.test(offerContext)) {
+    score += 4;
+  }
+  if (/outofstock|out of stock|unavailable|expired/.test(offerContext)) {
+    score -= 16;
+  }
+  if (!Number.isFinite(numericValue) || numericValue <= 0) {
+    score -= 40;
+  }
+
+  return score;
 }
 
 function buildJsonPriceExtraction(key: string, rawValue: string): { previewRawText: string; previewPrice: string } | null {
@@ -716,6 +859,8 @@ function detectGenericPriceCandidate(pageHtml: string, $: cheerio.CheerioAPI): {
         if (/wishlist|discount|save|xp|rating|reviews|star/.test(loweredRaw)) score -= 6;
         if (/\bwas\b|previously|before/.test(loweredRaw)) score -= 14;
         if (/\bnow\b|current price|club price|special/.test(loweredRaw)) score += 8;
+        if (/other sellers|buying options|option from|from \$|from [a-z]{3}\b/.test(loweredRaw)) score -= 18;
+        if (/no featured offers available/.test(pageHtml.toLowerCase())) score -= 12;
         if (node.text().trim().length <= 18) score += 2;
         const hasInclusiveTaxLabel = /(?:inc|incl)\.?\s*(?:gst|vat|tax)\b|(?:including|with)\s+tax\b|tax\s*included\b|\bttc\b|\btva\s*incl(?:use)?\b/.test(loweredRaw);
         const hasExclusiveTaxLabel = /\+gst\b|ex\s*gst\b|excluding\s*gst\b|\+vat\b|ex\s*vat\b|excluding\s*vat\b|ex\s*tax\b|excluding\s*tax\b|tax\s*excluded\b/.test(loweredRaw);
@@ -804,7 +949,7 @@ function detectGenericPriceCandidate(pageHtml: string, $: cheerio.CheerioAPI): {
           previewRawText: extraction.previewRawText,
           previewPrice: extraction.previewPrice,
           currency: "",
-          score: scoreJsonPriceKey(key)
+          score: scoreJsonPriceKey(key) + (typeof match.index === "number" ? scoreJsonContext(pageHtml, match.index, key) : 0)
         });
       } catch {
         // ignore unusable candidate
@@ -864,11 +1009,14 @@ function detectJsonLdPrice(html: string): { previewRawText: string; previewPrice
         }
 
         const offers = (node as { offers?: unknown }).offers;
-        const offerNodes = Array.isArray(offers) ? offers : offers ? [offers] : [];
-        for (const offer of offerNodes) {
-          if (!offer || typeof offer !== "object") {
-            continue;
-          }
+      const offerNodes = Array.isArray(offers) ? offers : offers ? [offers] : [];
+      const productName = typeof (node as { name?: unknown }).name === "string"
+        ? (node as { name?: string }).name?.trim() ?? ""
+        : "";
+      for (const offer of offerNodes) {
+        if (!offer || typeof offer !== "object") {
+          continue;
+        }
 
           const price = (offer as { price?: unknown }).price;
           const lowPrice = (offer as { lowPrice?: unknown }).lowPrice;
@@ -878,7 +1026,6 @@ function detectJsonLdPrice(html: string): { previewRawText: string; previewPrice
             if ((typeof rawCandidate === "string" || typeof rawCandidate === "number") && `${rawCandidate}`.trim()) {
               const normalized = `${rawCandidate}`.trim();
               const previewPrice = buildPriceExtraction(normalized).previewPrice;
-              const numericValue = Number.parseFloat(previewPrice);
               let score = 30;
               if (typeof price === "string" || typeof price === "number") {
                 if (`${rawCandidate}` === `${price}`) {
@@ -890,9 +1037,15 @@ function detectJsonLdPrice(html: string): { previewRawText: string; previewPrice
                   score += 5;
                 }
               }
-              if (numericValue <= 0) {
-                score -= 40;
-              }
+              const offerName = typeof (offer as { name?: unknown }).name === "string"
+                ? (offer as { name?: string }).name?.trim() ?? ""
+                : "";
+              score += scoreStructuredOfferContext(
+                productName,
+                offerName || productName,
+                offer as Record<string, unknown>,
+                previewPrice
+              );
               candidates.push({
                 previewRawText: normalized,
                 previewPrice,
