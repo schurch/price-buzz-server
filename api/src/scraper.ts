@@ -3,6 +3,8 @@ import { config } from "./config.js";
 import { utcNow } from "./utils.js";
 import type { DetectionResult, ScrapeDebugResult, ScrapePreferences, TrackedItemRecord } from "./types.js";
 
+type FetchMode = "http" | "browser" | "regional-http" | "regional-browser";
+
 const COMMON_PRICE_SELECTORS = [
   "meta[property='product:price:amount']",
   "meta[itemprop='price']",
@@ -419,6 +421,48 @@ function detectBlockedPageMessage(html: string, pageUrl: string, title: string):
   }
 
   return null;
+}
+
+function inferPreferredRegion(scrapePreferences: ScrapePreferences | null): "nz" | null {
+  if (!scrapePreferences) {
+    return null;
+  }
+
+  const acceptLanguage = scrapePreferences.acceptLanguage?.toLowerCase() ?? "";
+  const browserLocale = scrapePreferences.browserLocale?.toLowerCase() ?? "";
+  const browserTimezone = scrapePreferences.browserTimezone?.toLowerCase() ?? "";
+  const combined = `${acceptLanguage} ${browserLocale}`;
+
+  if (browserTimezone === "pacific/auckland") {
+    return "nz";
+  }
+  if (/(^|[^a-z])nz([^a-z]|$)/.test(combined) || /\b(?:en|mi)-nz\b/.test(combined)) {
+    return "nz";
+  }
+
+  return null;
+}
+
+function shouldPreferNzRegionalFallback(
+  scrapePreferences: ScrapePreferences | null,
+  detection: DetectionResult
+): boolean {
+  if (inferPreferredRegion(scrapePreferences) !== "nz") {
+    return false;
+  }
+
+  return !detection.currency || detection.currency !== "NZD";
+}
+
+function shouldRetryTrackedItemCheckWithRegional(
+  scrapePreferences: ScrapePreferences | null,
+  currency: string | null | undefined
+): boolean {
+  if (inferPreferredRegion(scrapePreferences) !== "nz") {
+    return false;
+  }
+
+  return !currency || currency !== "NZD";
 }
 
 function isBrowserChallengePage(html: string, pageUrl: string, title: string): boolean {
@@ -1290,6 +1334,84 @@ function shouldTryBrowserForHttpPage(rawUrl: string, page: { html: string; url: 
   };
 }
 
+async function fetchHtmlViaRegionalProxy(
+  rawUrl: string,
+  region: "nz",
+  mode: "http" | "browser"
+): Promise<{
+  html: string;
+  url: string;
+  fetchMode: FetchMode;
+}> {
+  const proxy = config.regionalProxy[region];
+  if (!proxy?.url) {
+    throw new Error(`Regional proxy not configured for ${region}`);
+  }
+
+  const response = await fetch(proxy.url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(proxy.secret ? { "x-proxy-secret": proxy.secret } : {})
+    },
+    body: JSON.stringify({
+      url: rawUrl,
+      mode
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Regional proxy request failed with status ${response.status}`);
+  }
+
+  const payload = await response.json() as {
+    ok?: boolean;
+    status?: number | null;
+    finalUrl?: string | null;
+    html?: string | null;
+    blocked?: boolean;
+    error?: string | null;
+  };
+
+  if (!payload.html || !payload.finalUrl) {
+    throw new Error(payload.error || `Regional proxy returned no HTML for ${rawUrl}`);
+  }
+
+  if (payload.blocked) {
+    const title = /<title[^>]*>(.*?)<\/title>/i.exec(payload.html)?.[1]?.trim() ?? "";
+    const blockedMessage = detectBlockedPageMessage(payload.html, payload.finalUrl, title);
+    if (blockedMessage) {
+      throw new AccessBlockedError(blockedMessage);
+    }
+  }
+
+  return {
+    html: payload.html,
+    url: payload.finalUrl,
+    fetchMode: mode === "browser" ? "regional-browser" : "regional-http"
+  };
+}
+
+async function fetchHtmlWithRegionalFallback(
+  rawUrl: string,
+  scrapePreferences: ScrapePreferences | null
+): Promise<{
+  html: string;
+  url: string;
+  fetchMode: FetchMode;
+}> {
+  const preferredRegion = inferPreferredRegion(scrapePreferences);
+  if (!preferredRegion) {
+    throw new Error("No regional fallback configured for this request");
+  }
+
+  try {
+    return await fetchHtmlViaRegionalProxy(rawUrl, preferredRegion, "http");
+  } catch {
+    return fetchHtmlViaRegionalProxy(rawUrl, preferredRegion, "browser");
+  }
+}
+
 async function fetchHtmlWithPreferences(
   rawUrl: string,
   headersJson: string | null,
@@ -1297,7 +1419,7 @@ async function fetchHtmlWithPreferences(
 ): Promise<{
   html: string;
   url: string;
-  fetchMode: "http" | "browser";
+  fetchMode: FetchMode;
 }> {
   const headers = parseHeaders(headersJson);
   if (!headers.Referer) {
@@ -1327,13 +1449,29 @@ async function fetchHtmlWithPreferences(
     return { ...page, fetchMode: "http" };
   } catch (error) {
     if (error instanceof AccessBlockedError) {
-      throw error;
+      try {
+        return await fetchHtmlWithRegionalFallback(rawUrl, scrapePreferences);
+      } catch {
+        throw error;
+      }
     }
     if (shouldUseBrowserFallback(error)) {
-      const page = await fetchHtmlWithBrowser(rawUrl, headers, scrapePreferences);
-      return { ...page, fetchMode: "browser" };
+      try {
+        const page = await fetchHtmlWithBrowser(rawUrl, headers, scrapePreferences);
+        return { ...page, fetchMode: "browser" };
+      } catch (browserError) {
+        try {
+          return await fetchHtmlWithRegionalFallback(rawUrl, scrapePreferences);
+        } catch {
+          throw browserError;
+        }
+      }
     }
-    throw error;
+    try {
+      return await fetchHtmlWithRegionalFallback(rawUrl, scrapePreferences);
+    } catch {
+      throw error;
+    }
   }
 }
 
@@ -1415,8 +1553,25 @@ export async function fetchScrapeDebugResult(
 }
 
 export async function detectTrackedItem(rawUrl: string, scrapePreferences: ScrapePreferences | null = null): Promise<DetectionResult> {
-  const page = await fetchHtmlWithPreferences(rawUrl, null, scrapePreferences);
-  const result = detectTrackedItemFromHtml(page.url, page.html);
+  let page = await fetchHtmlWithPreferences(rawUrl, null, scrapePreferences);
+  let result = detectTrackedItemFromHtml(page.url, page.html);
+
+  if (
+    (page.fetchMode === "http" || page.fetchMode === "browser")
+    && shouldPreferNzRegionalFallback(scrapePreferences, result)
+  ) {
+    try {
+      const regionalPage = await fetchHtmlWithRegionalFallback(rawUrl, scrapePreferences);
+      const regionalResult = detectTrackedItemFromHtml(regionalPage.url, regionalPage.html);
+      if (regionalResult.currency === "NZD") {
+        page = regionalPage;
+        result = regionalResult;
+      }
+    } catch {
+      // Keep the local result if the regional fallback cannot improve it.
+    }
+  }
+
   logScrapeEvent("detect", {
     inputUrl: rawUrl,
     finalUrl: page.url,
@@ -1523,9 +1678,35 @@ export async function fetchTrackedItemCheck(
   errorMessage?: string | null;
 }> {
   try {
-    const page = await fetchHtmlWithPreferences(item.url, item.headersJson, scrapePreferences);
-    const rawText = extractPriceText(item, page.html);
-    const price = normalizePrice(rawText, item.regex);
+    let page = await fetchHtmlWithPreferences(item.url, item.headersJson, scrapePreferences);
+    let rawText = extractPriceText(item, page.html);
+    let price = normalizePrice(rawText, item.regex);
+    let currency = inferCurrencyFromText(rawText) || item.currency || null;
+
+    if (
+      (page.fetchMode === "http" || page.fetchMode === "browser")
+      && shouldRetryTrackedItemCheckWithRegional(scrapePreferences, currency)
+    ) {
+      try {
+        const regionalPage = await fetchHtmlWithRegionalFallback(item.url, scrapePreferences);
+        const regionalRawText = extractPriceText(item, regionalPage.html);
+        const regionalPrice = normalizePrice(regionalRawText, item.regex);
+        const regionalCurrency = inferCurrencyFromText(regionalRawText) || item.currency || null;
+
+        if (
+          regionalCurrency === "NZD"
+          || (!currency && regionalCurrency)
+        ) {
+          page = regionalPage;
+          rawText = regionalRawText;
+          price = regionalPrice;
+          currency = regionalCurrency;
+        }
+      } catch {
+        // Keep the local result if the regional fallback cannot improve it.
+      }
+    }
+
     logScrapeEvent("check", {
       inputUrl: item.url,
       finalUrl: page.url,
@@ -1533,14 +1714,14 @@ export async function fetchTrackedItemCheck(
       detectionSource: item.detectionSource,
       rawText,
       price,
-      currency: item.currency
+      currency: currency ?? item.currency
     });
 
     return {
       status: "ok",
       checkedAt: utcNow(),
       price,
-      currency: item.currency,
+      currency: currency ?? item.currency,
       rawText
     };
   } catch (error) {

@@ -15,7 +15,8 @@
     "dev:web": "npm run dev --workspace web",
     "build": "npm run build --workspace web && npm run build --workspace api",
     "start": "npm run start --workspace api",
-    "test:api": "npm run test --workspace api"
+    "test:api": "npm run test --workspace api",
+    "build:regional-proxy": "./scripts/build-regional-proxy-lambda.sh"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

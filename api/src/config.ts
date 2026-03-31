@@ -32,5 +32,11 @@ export const config = {
   resendApiKey: (process.env.RESEND_API_KEY ?? "").trim(),
   resendFromEmail: (process.env.RESEND_FROM_EMAIL ?? "").trim(),
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN ?? "",
-  telegramBotUsername: (process.env.TELEGRAM_BOT_USERNAME ?? "").trim().replace(/^@/, "")
+  telegramBotUsername: (process.env.TELEGRAM_BOT_USERNAME ?? "").trim().replace(/^@/, ""),
+  regionalProxy: {
+    nz: {
+      url: (process.env.REGIONAL_PROXY_NZ_URL ?? "").trim(),
+      secret: (process.env.REGIONAL_PROXY_NZ_SECRET ?? "").trim()
+    }
+  }
 };
