@@ -45,8 +45,7 @@ await app.register(cookie);
 if (hasWebBuild) {
   await app.register(fastifyStatic, {
     root: webDistDir,
-    prefix: "/assets/",
-    decorateReply: false
+    prefix: "/assets/"
   });
 }
 
