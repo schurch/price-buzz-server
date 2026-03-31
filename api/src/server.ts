@@ -27,7 +27,9 @@ import type {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const webDistDir = path.resolve(__dirname, "../../web/dist");
+const webAssetsDir = path.join(webDistDir, "assets");
 const hasWebBuild = fs.existsSync(path.join(webDistDir, "index.html"));
+const webIndexHtml = hasWebBuild ? fs.readFileSync(path.join(webDistDir, "index.html"), "utf8") : null;
 
 const app = Fastify({ logger: true });
 const db = new AppDb(config.databasePath);
@@ -44,8 +46,9 @@ await app.register(cookie);
 
 if (hasWebBuild) {
   await app.register(fastifyStatic, {
-    root: webDistDir,
-    prefix: "/assets/"
+    root: webAssetsDir,
+    prefix: "/assets/",
+    decorateReply: false
   });
 }
 
@@ -739,7 +742,7 @@ function startTelegramSync(): void {
 
 if (hasWebBuild) {
   app.get("/", async (_request, reply) => {
-    reply.sendFile("index.html", webDistDir);
+    reply.type("text/html; charset=utf-8").send(webIndexHtml);
   });
 
   app.get("/*", async (request, reply) => {
@@ -748,7 +751,7 @@ if (hasWebBuild) {
       return;
     }
 
-    reply.sendFile("index.html", webDistDir);
+    reply.type("text/html; charset=utf-8").send(webIndexHtml);
   });
 } else {
   app.get("/", async () => ({
