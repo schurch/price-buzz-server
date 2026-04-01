@@ -1634,7 +1634,7 @@ function shouldTryBrowserForHttpPage(rawUrl: string, page: { html: string; url: 
   };
 }
 
-async function fetchHtmlViaRegionalProxy(
+export async function fetchHtmlViaRegionalProxy(
   rawUrl: string,
   region: "nz",
   mode: "http" | "browser"
@@ -1682,12 +1682,10 @@ async function fetchHtmlViaRegionalProxy(
   }
   await validateScrapeUrl(payload.finalUrl);
 
-  if (payload.blocked) {
-    const title = /<title[^>]*>(.*?)<\/title>/i.exec(payload.html)?.[1]?.trim() ?? "";
-    const blockedMessage = detectBlockedPageMessage(payload.html, payload.finalUrl, title);
-    if (blockedMessage) {
-      throw new AccessBlockedError(blockedMessage);
-    }
+  const title = /<title[^>]*>(.*?)<\/title>/i.exec(payload.html)?.[1]?.trim() ?? "";
+  const blockedMessage = detectBlockedPageMessage(payload.html, payload.finalUrl, title);
+  if (blockedMessage) {
+    throw new AccessBlockedError(blockedMessage);
   }
 
   return {

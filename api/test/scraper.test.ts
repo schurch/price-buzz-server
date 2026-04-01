@@ -7,10 +7,12 @@ import { fileURLToPath } from "node:url";
 import {
   detectTrackedItemFromHtml,
   extractTrackedItemCheckDataFromHtml,
+  fetchHtmlViaRegionalProxy,
   resolveRegionalFallbackRegion,
   shouldRetryWithNzRegionalFallback,
   validateScrapeUrl
 } from "../src/scraper.ts";
+import { config } from "../src/config.ts";
 import type { TrackedItemRecord } from "../src/types.ts";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -257,6 +259,57 @@ test("auto-detected inline currency items re-detect instead of replaying stale H
   assert.equal(checked.rawText, "NZ$ 11.56");
   assert.equal(checked.price, "11.56");
   assert.equal(checked.currency, "NZD");
+});
+
+test("regional proxy challenge HTML is rejected even when blocked flag is false", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalProxy = {
+    ...config.regionalProxy.nz
+  };
+  config.regionalProxy.nz.url = "https://proxy.example.test/";
+  config.regionalProxy.nz.secret = "secret";
+
+  const challengeHtml = `
+    <html>
+      <head><title>One more step</title></head>
+      <body>
+        <p>Please complete a security check to continue</p>
+        <noscript><span>Enable JavaScript and cookies to continue</span></noscript>
+        <script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1"></script>
+      </body>
+    </html>
+  `;
+
+  try {
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          mode: "http",
+          finalUrl: "https://1.1.1.1/en-US/p/alan-wake-2",
+          html: challengeHtml,
+          blocked: false
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        }
+      )) as typeof fetch;
+
+    await assert.rejects(
+      () =>
+        fetchHtmlViaRegionalProxy(
+          "https://1.1.1.1/en-US/p/alan-wake-2",
+          "nz",
+          "http"
+        ),
+      /challenging automated traffic/i
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    config.regionalProxy.nz.url = originalProxy.url;
+    config.regionalProxy.nz.secret = originalProxy.secret;
+  }
 });
 
 test("NZD tracked items resolve NZ regional fallback even without saved scrape preferences", () => {
