@@ -1,3 +1,6 @@
+import dns from "node:dns/promises";
+import net from "node:net";
+
 const DEFAULT_USER_AGENT =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 const DEFAULT_ACCEPT =
@@ -75,7 +78,7 @@ export function parseProxyRequest(event) {
 export function authorize(event) {
   const expected = process.env.PROXY_SHARED_SECRET?.trim();
   if (!expected) {
-    return true;
+    return false;
   }
 
   const bodyPayload =
@@ -90,6 +93,55 @@ export function authorize(event) {
     null;
 
   return provided === expected;
+}
+
+function isBlockedIpAddress(ip) {
+  if (net.isIP(ip) === 4) {
+    if (ip === "127.0.0.1" || ip === "0.0.0.0") return true;
+    if (ip.startsWith("10.")) return true;
+    if (ip.startsWith("192.168.")) return true;
+    if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(ip)) return true;
+    if (ip.startsWith("169.254.")) return true;
+    if (ip === "100.100.100.200") return true;
+    return false;
+  }
+
+  if (net.isIP(ip) === 6) {
+    const normalized = ip.toLowerCase();
+    if (normalized === "::1" || normalized === "::") return true;
+    if (normalized.startsWith("fc") || normalized.startsWith("fd")) return true;
+    if (normalized.startsWith("fe80:")) return true;
+    if (normalized.startsWith("::ffff:127.")) return true;
+    if (normalized.startsWith("::ffff:10.")) return true;
+    if (normalized.startsWith("::ffff:192.168.")) return true;
+    if (/^::ffff:172\.(1[6-9]|2\d|3[0-1])\./.test(normalized)) return true;
+    if (normalized.startsWith("::ffff:169.254.")) return true;
+    return false;
+  }
+
+  return true;
+}
+
+export async function validateTargetUrl(url) {
+  const parsed = new URL(url);
+  const hostname = parsed.hostname.trim().toLowerCase();
+  if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local")) {
+    throw new Error("Private or local network targets are not allowed");
+  }
+
+  if (net.isIP(hostname)) {
+    if (isBlockedIpAddress(hostname)) {
+      throw new Error("Private or local network targets are not allowed");
+    }
+    return parsed;
+  }
+
+  const records = await dns.lookup(hostname, { all: true });
+  if (records.length === 0 || records.some((record) => isBlockedIpAddress(record.address))) {
+    throw new Error("Private or local network targets are not allowed");
+  }
+
+  return parsed;
 }
 
 export function looksBlocked(title, html) {
@@ -123,16 +175,34 @@ export function pickHeaders(headers, names) {
 }
 
 export async function fetchWithHttp(url) {
-  const response = await fetch(url, {
-    redirect: "follow",
-    headers: {
-      "user-agent": DEFAULT_USER_AGENT,
-      accept: DEFAULT_ACCEPT,
-      "accept-language": DEFAULT_ACCEPT_LANGUAGE,
-      "cache-control": "no-cache",
-      pragma: "no-cache"
+  let currentUrl = (await validateTargetUrl(url)).toString();
+  let response = null;
+  for (let redirects = 0; redirects < 5; redirects += 1) {
+    response = await fetch(currentUrl, {
+      redirect: "manual",
+      headers: {
+        "user-agent": DEFAULT_USER_AGENT,
+        accept: DEFAULT_ACCEPT,
+        "accept-language": DEFAULT_ACCEPT_LANGUAGE,
+        "cache-control": "no-cache",
+        pragma: "no-cache"
+      }
+    });
+
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      const location = response.headers.get("location");
+      if (!location) {
+        throw new Error("Redirect response did not include a location");
+      }
+      currentUrl = (await validateTargetUrl(new URL(location, currentUrl).toString())).toString();
+      continue;
     }
-  });
+    break;
+  }
+
+  if (!response) {
+    throw new Error("No response received");
+  }
 
   const html = await response.text();
   const title = extractTitle(html);
@@ -160,6 +230,7 @@ export async function fetchWithHttp(url) {
 }
 
 export async function fetchWithBrowser(url) {
+  const validatedUrl = await validateTargetUrl(url);
   const chromiumPackage = await import("@sparticuz/chromium");
   const playwrightPackage = await import("playwright-core");
   const chromium = chromiumPackage.default;
@@ -177,6 +248,20 @@ export async function fetchWithBrowser(url) {
       userAgent: DEFAULT_USER_AGENT,
       locale: "en-NZ"
     });
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      if (!request.isNavigationRequest() && request.resourceType() !== "document") {
+        await route.continue();
+        return;
+      }
+
+      try {
+        await validateTargetUrl(request.url());
+        await route.continue();
+      } catch {
+        await route.abort();
+      }
+    });
 
     await page.setExtraHTTPHeaders({
       accept: DEFAULT_ACCEPT,
@@ -185,7 +270,7 @@ export async function fetchWithBrowser(url) {
       pragma: "no-cache"
     });
 
-    const response = await page.goto(url, {
+    const response = await page.goto(validatedUrl.toString(), {
       waitUntil: "domcontentloaded",
       timeout: 45000
     });

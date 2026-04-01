@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { authorize, extractTitle, looksBlocked, parseProxyRequest } from "../index.mjs";
+import { authorize, extractTitle, looksBlocked, parseProxyRequest, validateTargetUrl } from "../index.mjs";
 
 test("parseProxyRequest accepts body url and defaults mode to http", () => {
   const result = parseProxyRequest({
@@ -42,7 +42,7 @@ test("extractTitle returns page title", () => {
 
 test("authorize passes without configured secret", () => {
   delete process.env.PROXY_SHARED_SECRET;
-  assert.equal(authorize({}), true);
+  assert.equal(authorize({}), false);
 });
 
 test("authorize checks configured secret", () => {
@@ -50,4 +50,10 @@ test("authorize checks configured secret", () => {
   assert.equal(authorize({ headers: { "x-proxy-secret": "top-secret" } }), true);
   assert.equal(authorize({ headers: { "x-proxy-secret": "wrong" } }), false);
   delete process.env.PROXY_SHARED_SECRET;
+});
+
+test("validateTargetUrl rejects localhost and private network targets", async () => {
+  await assert.rejects(() => validateTargetUrl("http://127.0.0.1:8080/private"));
+  await assert.rejects(() => validateTargetUrl("http://localhost:3000/private"));
+  await assert.rejects(() => validateTargetUrl("http://169.254.169.254/latest/meta-data"));
 });

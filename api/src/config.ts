@@ -33,6 +33,9 @@ export const config = {
   resendFromEmail: (process.env.RESEND_FROM_EMAIL ?? "").trim(),
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN ?? "",
   telegramBotUsername: (process.env.TELEGRAM_BOT_USERNAME ?? "").trim().replace(/^@/, ""),
+  secureCookies:
+    (process.env.APP_BASE_URL ?? "").trim().toLowerCase().startsWith("https://")
+    || (process.env.NODE_ENV ?? "").trim().toLowerCase() === "production",
   regionalProxy: {
     nz: {
       url: (process.env.REGIONAL_PROXY_NZ_URL ?? "").trim(),

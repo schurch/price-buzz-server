@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { detectTrackedItemFromHtml, extractTrackedItemCheckDataFromHtml } from "../src/scraper.ts";
+import { detectTrackedItemFromHtml, extractTrackedItemCheckDataFromHtml, validateScrapeUrl } from "../src/scraper.ts";
 import type { TrackedItemRecord } from "../src/types.ts";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -248,4 +248,10 @@ test("tracked items include item-level scrape preference persistence and lookup"
   assert.match(trackerSource, /acceptLanguage: item\.acceptLanguage \?\? owner\?\.acceptLanguage \?\? null/);
   assert.match(trackerSource, /browserLocale: item\.browserLocale \?\? owner\?\.browserLocale \?\? null/);
   assert.match(trackerSource, /browserTimezone: item\.browserTimezone \?\? owner\?\.browserTimezone \?\? null/);
+});
+
+test("validateScrapeUrl rejects localhost and private network targets", async () => {
+  await assert.rejects(() => validateScrapeUrl("http://127.0.0.1:8080/private"));
+  await assert.rejects(() => validateScrapeUrl("http://localhost:3000/private"));
+  await assert.rejects(() => validateScrapeUrl("http://169.254.169.254/latest/meta-data"));
 });

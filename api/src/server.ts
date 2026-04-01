@@ -10,7 +10,7 @@ import { buildSessionExpiry, createPasswordHash, createSessionToken, verifyPassw
 import { config } from "./config.js";
 import { AppDb } from "./db.js";
 import { NotificationService } from "./notifications.js";
-import { detectTrackedItem, fetchScrapeDebugResult } from "./scraper.js";
+import { detectTrackedItem, fetchScrapeDebugResult, validateScrapeUrl } from "./scraper.js";
 import { TrackerService } from "./tracker.js";
 import type {
   NotificationChannelRecord,
@@ -40,6 +40,7 @@ const notifications = new NotificationService({
   telegramBotUsername: config.telegramBotUsername
 });
 const tracker = new TrackerService(db, notifications);
+const rateLimitBuckets = new Map<string, { count: number; resetAt: number }>();
 
 await app.register(formbody);
 await app.register(cookie);
@@ -127,7 +128,7 @@ function setSession(reply: FastifyReply, sessionId: string): void {
     path: "/",
     httpOnly: true,
     sameSite: "lax",
-    secure: false,
+    secure: config.secureCookies,
     maxAge: 60 * 60 * 24 * 30
   });
 }
@@ -166,6 +167,32 @@ function requireAdmin(request: FastifyRequest, reply: FastifyReply): UserRecord 
   }
 
   return user;
+}
+
+function enforceRateLimit(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  bucketName: string,
+  limit: number,
+  windowMs: number
+): boolean {
+  const key = `${bucketName}:${request.ip}`;
+  const now = Date.now();
+  const current = rateLimitBuckets.get(key);
+  if (!current || current.resetAt <= now) {
+    rateLimitBuckets.set(key, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+
+  if (current.count >= limit) {
+    reply.header("Retry-After", Math.ceil((current.resetAt - now) / 1000));
+    reply.code(429).send({ error: "Too many requests. Please try again later." });
+    return false;
+  }
+
+  current.count += 1;
+  rateLimitBuckets.set(key, current);
+  return true;
 }
 
 function persistUserScrapePreferences(userId: number, scrapePreferences: ScrapePreferences): void {
@@ -287,6 +314,9 @@ app.get("/api/session", async (request) => {
 });
 
 app.post("/api/auth/signup", async (request, reply) => {
+  if (!enforceRateLimit(request, reply, "signup", 10, 15 * 60 * 1000)) {
+    return;
+  }
   const body = (request.body as Record<string, unknown> | undefined) ?? {};
   const scrapePreferences = readScrapePreferences(request, body);
   const firstName = typeof body.firstName === "string" ? body.firstName.trim() : "";
@@ -349,6 +379,9 @@ app.post("/api/auth/signup", async (request, reply) => {
 });
 
 app.post("/api/auth/login", async (request, reply) => {
+  if (!enforceRateLimit(request, reply, "login", 20, 15 * 60 * 1000)) {
+    return;
+  }
   const body = (request.body as Record<string, unknown> | undefined) ?? {};
   const scrapePreferences = readScrapePreferences(request, body);
   const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
@@ -401,6 +434,9 @@ app.post("/api/items/detect", async (request, reply) => {
   if (!user) {
     return;
   }
+  if (!enforceRateLimit(request, reply, "detect", 30, 15 * 60 * 1000)) {
+    return;
+  }
 
   const body = (request.body as Record<string, unknown> | undefined) ?? {};
   const scrapePreferences = readScrapePreferences(request, body);
@@ -417,7 +453,7 @@ app.post("/api/items/detect", async (request, reply) => {
     reply.send({ detection });
   } catch (error) {
     reply.code(400).send({
-      error: error instanceof Error ? error.message : "Failed to detect a price on that URL."
+      error: "Could not check that URL right now."
     });
   }
 });
@@ -441,6 +477,12 @@ app.post("/api/items", async (request, reply) => {
 
   if (!name || !url || !currency || !initialDetectedPrice) {
     reply.code(400).send({ error: "The detection preview was incomplete. Please try again." });
+    return;
+  }
+  try {
+    await validateScrapeUrl(url);
+  } catch {
+    reply.code(400).send({ error: "That URL is not allowed." });
     return;
   }
 
@@ -694,6 +736,12 @@ app.patch("/api/admin/items/:id", async (request, reply) => {
     reply.code(400).send({ error: "Provide the tracked item name and URL." });
     return;
   }
+  try {
+    await validateScrapeUrl(url);
+  } catch {
+    reply.code(400).send({ error: "That URL is not allowed." });
+    return;
+  }
 
   const updated = db.updateTrackedItemByAdmin({ trackedItemId, name, url, enabled });
   if (!updated) {
@@ -798,6 +846,9 @@ app.post("/api/admin/test/telegram", async (request, reply) => {
 app.post("/api/admin/scrape-debug", async (request, reply) => {
   const user = requireAdmin(request, reply);
   if (!user) {
+    return;
+  }
+  if (!enforceRateLimit(request, reply, "admin-scrape-debug", 20, 15 * 60 * 1000)) {
     return;
   }
 

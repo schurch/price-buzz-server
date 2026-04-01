@@ -1,4 +1,6 @@
 import * as cheerio from "cheerio";
+import dns from "node:dns/promises";
+import net from "node:net";
 import { config } from "./config.js";
 import { utcNow } from "./utils.js";
 import type { DetectionResult, ScrapeDebugResult, ScrapePreferences, TrackedItemRecord } from "./types.js";
@@ -36,6 +38,68 @@ class AccessBlockedError extends Error {
     super(message);
     this.name = "AccessBlockedError";
   }
+}
+
+function isBlockedIpAddress(ip: string): boolean {
+  if (net.isIP(ip) === 4) {
+    if (ip === "127.0.0.1" || ip === "0.0.0.0") return true;
+    if (ip.startsWith("10.")) return true;
+    if (ip.startsWith("192.168.")) return true;
+    if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(ip)) return true;
+    if (ip.startsWith("169.254.")) return true;
+    if (ip === "100.100.100.200") return true;
+    return false;
+  }
+
+  if (net.isIP(ip) === 6) {
+    const normalized = ip.toLowerCase();
+    if (normalized === "::1" || normalized === "::") return true;
+    if (normalized.startsWith("fc") || normalized.startsWith("fd")) return true;
+    if (normalized.startsWith("fe80:")) return true;
+    if (normalized.startsWith("::ffff:127.")) return true;
+    if (normalized.startsWith("::ffff:10.")) return true;
+    if (normalized.startsWith("::ffff:192.168.")) return true;
+    if (/^::ffff:172\.(1[6-9]|2\d|3[0-1])\./.test(normalized)) return true;
+    if (normalized.startsWith("::ffff:169.254.")) return true;
+    return false;
+  }
+
+  return true;
+}
+
+export async function validateScrapeUrl(rawUrl: string): Promise<URL> {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error("Invalid URL.");
+  }
+
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error("Only http and https URLs are allowed.");
+  }
+
+  const hostname = parsed.hostname.trim().toLowerCase();
+  if (!hostname) {
+    throw new Error("Invalid URL hostname.");
+  }
+  if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local")) {
+    throw new Error("Private or local network targets are not allowed.");
+  }
+
+  if (net.isIP(hostname)) {
+    if (isBlockedIpAddress(hostname)) {
+      throw new Error("Private or local network targets are not allowed.");
+    }
+    return parsed;
+  }
+
+  const records = await dns.lookup(hostname, { all: true });
+  if (records.length === 0 || records.some((record) => isBlockedIpAddress(record.address))) {
+    throw new Error("Private or local network targets are not allowed.");
+  }
+
+  return parsed;
 }
 
 function parseHeaders(headersJson: string | null): Record<string, string> {
@@ -288,29 +352,44 @@ async function fetchHtmlWithHttp(
   headers: Record<string, string>,
   scrapePreferences: ScrapePreferences | null
 ): Promise<{ html: string; url: string }> {
+  let currentUrl = (await validateScrapeUrl(rawUrl)).toString();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.timeoutSeconds * 1000);
 
   try {
-    const response = await fetch(rawUrl, {
-      headers: buildScrapeHeaders(headers, scrapePreferences),
-      signal: controller.signal
-    });
+    for (let redirects = 0; redirects < 5; redirects += 1) {
+      const response = await fetch(currentUrl, {
+        headers: buildScrapeHeaders(headers, scrapePreferences),
+        signal: controller.signal,
+        redirect: "manual"
+      });
 
-    if (!response.ok) {
-      const responseText = await response.text();
-      throw new HttpStatusError(
-        `Request failed with ${response.status} ${response.statusText}`,
-        response.status,
-        response.headers,
-        responseText
-      );
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        const location = response.headers.get("location");
+        if (!location) {
+          throw new Error("Redirect response did not include a location.");
+        }
+        currentUrl = (await validateScrapeUrl(new URL(location, currentUrl).toString())).toString();
+        continue;
+      }
+
+      if (!response.ok) {
+        const responseText = await response.text();
+        throw new HttpStatusError(
+          `Request failed with ${response.status} ${response.statusText}`,
+          response.status,
+          response.headers,
+          responseText
+        );
+      }
+
+      return {
+        html: await response.text(),
+        url: response.url
+      };
     }
 
-    return {
-      html: await response.text(),
-      url: response.url
-    };
+    throw new Error("Too many redirects while fetching this URL.");
   } finally {
     clearTimeout(timeout);
   }
@@ -563,6 +642,7 @@ async function fetchHtmlWithBrowser(
   headers: Record<string, string>,
   scrapePreferences: ScrapePreferences | null
 ): Promise<{ html: string; url: string }> {
+  const validatedUrl = await validateScrapeUrl(rawUrl);
   const { chromium } = await import("playwright");
   const browser = await chromium.launch({
     headless: true,
@@ -584,6 +664,20 @@ async function fetchHtmlWithBrowser(
     });
 
     const capturedJsonPayloads: string[] = [];
+    await context.route("**/*", async (route) => {
+      const request = route.request();
+      if (!request.isNavigationRequest() && request.resourceType() !== "document") {
+        await route.continue();
+        return;
+      }
+
+      try {
+        await validateScrapeUrl(request.url());
+        await route.continue();
+      } catch {
+        await route.abort();
+      }
+    });
     const page = await context.newPage();
     page.on("response", (response) => {
       if (capturedJsonPayloads.length >= 8) {
@@ -623,7 +717,7 @@ async function fetchHtmlWithBrowser(
       "Sec-CH-UA-Mobile": "?0",
       "Sec-CH-UA-Platform": "\"Windows\""
     });
-    await navigateBrowserPage(page, rawUrl, config.timeoutSeconds * 1000);
+    await navigateBrowserPage(page, validatedUrl.toString(), config.timeoutSeconds * 1000);
     const html = await settleBrowserPage(page, rawUrl, config.timeoutSeconds * 1000);
 
     return {
@@ -1344,12 +1438,16 @@ async function fetchHtmlViaRegionalProxy(
   if (!proxy?.url) {
     throw new Error(`Regional proxy not configured for ${region}`);
   }
+  if (!proxy.secret) {
+    throw new Error(`Regional proxy secret not configured for ${region}`);
+  }
+  await validateScrapeUrl(rawUrl);
 
   const response = await fetch(proxy.url, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      ...(proxy.secret ? { "x-proxy-secret": proxy.secret } : {})
+      "x-proxy-secret": proxy.secret
     },
     body: JSON.stringify({
       url: rawUrl,
@@ -1373,6 +1471,7 @@ async function fetchHtmlViaRegionalProxy(
   if (!payload.html || !payload.finalUrl) {
     throw new Error(payload.error || `Regional proxy returned no HTML for ${rawUrl}`);
   }
+  await validateScrapeUrl(payload.finalUrl);
 
   if (payload.blocked) {
     const title = /<title[^>]*>(.*?)<\/title>/i.exec(payload.html)?.[1]?.trim() ?? "";
