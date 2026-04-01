@@ -287,20 +287,11 @@ export function extractTrackedItemCheckDataFromHtml(
   price: string;
   currency: string | null;
 } {
-  if (item.detectionSource?.startsWith("auto:")) {
-    const detection = detectTrackedItemFromHtml(item.url, html);
-    return {
-      rawText: detection.previewRawText,
-      price: detection.previewPrice,
-      currency: detection.currency || item.currency || null
-    };
-  }
-
-  const rawText = extractPriceText(item, html);
+  const detection = detectTrackedItemFromHtml(item.url, html);
   return {
-    rawText,
-    price: normalizePrice(rawText, item.regex),
-    currency: inferCurrencyFromText(rawText) || item.currency || null
+    rawText: detection.previewRawText,
+    price: detection.previewPrice,
+    currency: detection.currency || item.currency || null
   };
 }
 

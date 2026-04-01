@@ -432,18 +432,14 @@ app.post("/api/items", async (request, reply) => {
   const scrapePreferences = readScrapePreferences(request, body);
   const name = typeof body.name === "string" ? body.name.trim() : "";
   const url = typeof body.url === "string" ? body.url.trim() : "";
-  const selector = typeof body.selector === "string" ? body.selector.trim() || null : null;
   const currency = typeof body.currency === "string" ? body.currency.trim() : "";
   const initialDetectedPrice = typeof body.initialDetectedPrice === "string" ? body.initialDetectedPrice.trim() || null : null;
   const initialDetectedCurrency = typeof body.initialDetectedCurrency === "string" ? body.initialDetectedCurrency.trim() || null : null;
   const initialDetectedRawText = typeof body.initialDetectedRawText === "string" ? body.initialDetectedRawText.trim() || null : null;
-  const attribute = typeof body.attribute === "string" ? body.attribute.trim() || null : null;
-  const regex = typeof body.regex === "string" ? body.regex.trim() || null : null;
-  const htmlRegex = typeof body.htmlRegex === "string" ? body.htmlRegex.trim() || null : null;
   const pageTitle = typeof body.pageTitle === "string" ? body.pageTitle.trim() || null : null;
   const detectionSource = typeof body.detectionSource === "string" ? body.detectionSource.trim() || null : null;
 
-  if (!name || !url || (!selector && !htmlRegex)) {
+  if (!name || !url || !currency || !initialDetectedPrice) {
     reply.code(400).send({ error: "The detection preview was incomplete. Please try again." });
     return;
   }
@@ -457,15 +453,11 @@ app.post("/api/items", async (request, reply) => {
     acceptLanguage: scrapePreferences.acceptLanguage,
     browserLocale: scrapePreferences.browserLocale,
     browserTimezone: scrapePreferences.browserTimezone,
-    selector,
     currency,
     initialDetectedPrice,
     initialDetectedCurrency,
     initialDetectedRawText,
     firstDetectedAt: new Date().toISOString(),
-    attribute,
-    regex,
-    htmlRegex,
     detectionSource,
     enabled: true
   });

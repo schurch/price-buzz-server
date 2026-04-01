@@ -388,14 +388,10 @@ function DashboardPage({ user }: { user: User }) {
         name: nameOverride || detection.name,
         pageTitle: detection.pageTitle,
         url: detection.url,
-        selector: detection.selector,
         currency: detection.currency,
         initialDetectedPrice: detection.previewPrice,
         initialDetectedCurrency: detection.currency,
         initialDetectedRawText: detection.previewRawText,
-        attribute: detection.attribute,
-        regex: detection.regex,
-        htmlRegex: detection.htmlRegex,
         detectionSource: detection.detectionSource
       });
       setItems(payload.dashboard.items);

@@ -15,11 +15,7 @@ export type DetectionResult = {
   name: string;
   pageTitle: string | null;
   url: string;
-  selector: string | null;
   currency: string;
-  attribute: string | null;
-  regex: string | null;
-  htmlRegex: string | null;
   detectionSource: string;
   previewRawText: string;
   previewPrice: string;
@@ -42,11 +38,7 @@ export type TrackedItemWithHistory = {
   name: string;
   pageTitle: string | null;
   url: string;
-  selector: string | null;
   currency: string;
-  attribute: string | null;
-  regex: string | null;
-  htmlRegex: string | null;
   headersJson: string | null;
   detectionSource: string | null;
   initialDetectedPrice: string | null;
