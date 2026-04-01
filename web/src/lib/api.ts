@@ -130,6 +130,21 @@ export function deleteItem(id: number): Promise<{
 
 export function runChecks(): Promise<{
   notice: string;
+  runSummary: {
+    checked: number;
+    successes: number;
+    errors: number;
+    items: Array<{
+      trackedItemId: number;
+      name: string;
+      url: string;
+      status: "ok" | "error";
+      checkedAt: string;
+      price: string | null;
+      currency: string | null;
+      errorMessage: string | null;
+    }>;
+  };
   admin: {
     user: User;
     users: UserWithCounts[];

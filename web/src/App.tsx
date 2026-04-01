@@ -44,6 +44,21 @@ type Banner = {
 
 type ItemSortMode = "checked" | "name" | "latest" | "lowest";
 type ItemGroupMode = "none" | "status" | "currency" | "site";
+type AdminRunSummary = {
+  checked: number;
+  successes: number;
+  errors: number;
+  items: Array<{
+    trackedItemId: number;
+    name: string;
+    url: string;
+    status: "ok" | "error";
+    checkedAt: string;
+    price: string | null;
+    currency: string | null;
+    errorMessage: string | null;
+  }>;
+};
 
 function App() {
   const [session, setSession] = useState<SessionState>({ status: "loading", user: null });
@@ -727,6 +742,7 @@ function AdminPage({ user }: { user: User }) {
   const [telegramTargets, setTelegramTargets] = useState("");
   const [scrapeUrl, setScrapeUrl] = useState("");
   const [scrapeResult, setScrapeResult] = useState<ScrapeDebugResult | null>(null);
+  const [runSummary, setRunSummary] = useState<AdminRunSummary | null>(null);
 
   useEffect(() => {
     void getAdmin()
@@ -797,6 +813,7 @@ function AdminPage({ user }: { user: User }) {
     try {
       const payload = await runChecks();
       setBanner({ notice: payload.notice, error: null });
+      setRunSummary(payload.runSummary);
       applyAdminPayload(payload.admin);
     } catch (error) {
       setBanner({ notice: null, error: error instanceof Error ? error.message : "Failed to run checks." });
@@ -901,10 +918,42 @@ function AdminPage({ user }: { user: User }) {
           </dl>
         </div>
         <div className="panel">
-          <h2>Manual checks</h2>
-          <button className="button primary" onClick={handleRunChecks}>Run my checks now</button>
+          <h2>Scrape tracked items now</h2>
+          <p className="muted">
+            This runs the full scraper pipeline immediately for enabled items on the admin account, stores new check results,
+            and records any scrape errors.
+          </p>
+          <button className="button primary" onClick={handleRunChecks}>Scrape admin account items now</button>
         </div>
       </section>
+
+      {runSummary && (
+        <section className="panel">
+          <h2>Latest scrape run</h2>
+          <dl className="stats-list">
+            <div><dt>Items scraped</dt><dd>{runSummary.checked}</dd></div>
+            <div><dt>Successful</dt><dd>{runSummary.successes}</dd></div>
+            <div><dt>Errors</dt><dd>{runSummary.errors}</dd></div>
+          </dl>
+          <div className="history-block">
+            <h4>Item results</h4>
+            <ul>
+              {runSummary.items.length === 0 ? (
+                <li>No items were scraped.</li>
+              ) : runSummary.items.map((entry) => (
+                <li key={`${entry.trackedItemId}-${entry.checkedAt}`}>
+                  <span>{entry.name}</span>
+                  <span>
+                    {entry.status === "ok"
+                      ? `${formatPrice(entry.price, entry.currency)} at ${formatTimestamp(entry.checkedAt)}`
+                      : `Error at ${formatTimestamp(entry.checkedAt)}: ${entry.errorMessage ?? "An error occurred"}`}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </section>
+      )}
 
       <section className="grid page-grid">
         <div className="panel">

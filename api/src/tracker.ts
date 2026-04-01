@@ -18,26 +18,59 @@ export class TrackerService {
     };
   }
 
-  async runAllChecks(): Promise<{ checked: number }> {
+  async runAllChecks(): Promise<{
+    checked: number;
+    successes: number;
+    errors: number;
+    items: Array<{
+      trackedItemId: number;
+      name: string;
+      url: string;
+      status: "ok" | "error";
+      checkedAt: string;
+      price: string | null;
+      currency: string | null;
+      errorMessage: string | null;
+    }>;
+  }> {
     if (this.running) {
-      return { checked: 0 };
+      return { checked: 0, successes: 0, errors: 0, items: [] };
     }
 
     this.running = true;
     try {
       const items = this.db.listEnabledTrackedItems();
-      await this.runChecksForItems(items);
+      const results = await this.runChecksForItems(items);
 
       this.lastRunAt = new Date().toISOString();
-      return { checked: items.length };
+      return {
+        checked: items.length,
+        successes: results.filter((entry) => entry.status === "ok").length,
+        errors: results.filter((entry) => entry.status === "error").length,
+        items: results
+      };
     } finally {
       this.running = false;
     }
   }
 
-  async runChecksForUser(userId: number): Promise<{ checked: number }> {
+  async runChecksForUser(userId: number): Promise<{
+    checked: number;
+    successes: number;
+    errors: number;
+    items: Array<{
+      trackedItemId: number;
+      name: string;
+      url: string;
+      status: "ok" | "error";
+      checkedAt: string;
+      price: string | null;
+      currency: string | null;
+      errorMessage: string | null;
+    }>;
+  }> {
     if (this.running) {
-      return { checked: 0 };
+      return { checked: 0, successes: 0, errors: 0, items: [] };
     }
 
     this.running = true;
@@ -45,16 +78,41 @@ export class TrackerService {
       const items = this.db
         .listTrackedItemsForUser(userId)
         .filter((item) => item.enabled && !item.archivedAt);
-      await this.runChecksForItems(items);
+      const results = await this.runChecksForItems(items);
 
       this.lastRunAt = new Date().toISOString();
-      return { checked: items.length };
+      return {
+        checked: items.length,
+        successes: results.filter((entry) => entry.status === "ok").length,
+        errors: results.filter((entry) => entry.status === "error").length,
+        items: results
+      };
     } finally {
       this.running = false;
     }
   }
 
-  private async runChecksForItems(items: ReturnType<AppDb["listEnabledTrackedItems"]>): Promise<void> {
+  private async runChecksForItems(items: ReturnType<AppDb["listEnabledTrackedItems"]>): Promise<Array<{
+    trackedItemId: number;
+    name: string;
+    url: string;
+    status: "ok" | "error";
+    checkedAt: string;
+    price: string | null;
+    currency: string | null;
+    errorMessage: string | null;
+  }>> {
+    const runResults: Array<{
+      trackedItemId: number;
+      name: string;
+      url: string;
+      status: "ok" | "error";
+      checkedAt: string;
+      price: string | null;
+      currency: string | null;
+      errorMessage: string | null;
+    }> = [];
+
     for (const item of items) {
       const previous = this.db.getLatestSuccessfulCheck(item.id);
       const owner = this.db.getUserById(item.ownerUserId);
@@ -71,6 +129,16 @@ export class TrackerService {
         currency: result.currency,
         rawText: result.rawText,
         errorMessage: result.errorMessage
+      });
+      runResults.push({
+        trackedItemId: item.id,
+        name: item.name,
+        url: item.url,
+        status: result.status,
+        checkedAt: result.checkedAt,
+        price: result.price ?? null,
+        currency: result.currency ?? item.currency,
+        errorMessage: result.errorMessage ?? null
       });
 
       if (
@@ -111,5 +179,7 @@ export class TrackerService {
         }
       }
     }
+
+    return runResults;
   }
 }

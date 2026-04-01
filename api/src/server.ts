@@ -501,7 +501,13 @@ app.post("/api/checks/run", async (request, reply) => {
 
   const result = await tracker.runChecksForUser(user.id);
   reply.send({
-    notice: `Checked ${result.checked} enabled item${result.checked === 1 ? "" : "s"} for your account.`,
+    notice: `Scraped ${result.checked} enabled item${result.checked === 1 ? "" : "s"} for your admin account.`,
+    runSummary: {
+      checked: result.checked,
+      successes: result.successes,
+      errors: result.errors,
+      items: result.items
+    },
     admin: buildAdminPayload(user)
   });
 });
