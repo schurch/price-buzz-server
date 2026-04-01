@@ -858,6 +858,43 @@ function AdminPage({ user }: { user: User }) {
             <div><strong>Final URL:</strong> {scrapeResult.finalUrl ?? "n/a"}</div>
             <div><strong>Page title:</strong> {scrapeResult.pageTitle ?? "n/a"}</div>
             <div><strong>HTML bytes:</strong> {scrapeResult.htmlBytes ?? "n/a"}</div>
+            <div><strong>Blocked message:</strong> {scrapeResult.blockedMessage ?? "n/a"}</div>
+            <div><strong>Error:</strong> {scrapeResult.errorMessage ?? "n/a"}</div>
+            <div><strong>Preferred region:</strong> {scrapeResult.inferredRegion ?? "n/a"}</div>
+            <div><strong>Browser fallback suggested:</strong> {scrapeResult.browserFallbackSuggested == null ? "n/a" : scrapeResult.browserFallbackSuggested ? "yes" : "no"}</div>
+
+            <h3>Localisation</h3>
+            <div><strong>Accept-Language:</strong> {scrapeResult.scrapePreferences?.acceptLanguage ?? "n/a"}</div>
+            <div><strong>Browser locale:</strong> {scrapeResult.scrapePreferences?.browserLocale ?? "n/a"}</div>
+            <div><strong>Browser timezone:</strong> {scrapeResult.scrapePreferences?.browserTimezone ?? "n/a"}</div>
+
+            <h3>Request headers</h3>
+            <textarea
+              readOnly
+              rows={6}
+              value={JSON.stringify(scrapeResult.requestHeaders, null, 2)}
+            />
+
+            <h3>Detection</h3>
+            {scrapeResult.detection ? (
+              <>
+                <div><strong>Name:</strong> {scrapeResult.detection.name}</div>
+                <div><strong>Detected price:</strong> {formatPrice(scrapeResult.detection.previewPrice, scrapeResult.detection.currency)}</div>
+                <div><strong>Detection source:</strong> {scrapeResult.detection.detectionSource}</div>
+                <div><strong>Raw text:</strong> {scrapeResult.detection.previewRawText}</div>
+              </>
+            ) : (
+              <div>No price detection result.</div>
+            )}
+
+            <h3>Event log</h3>
+            <textarea
+              readOnly
+              rows={10}
+              value={scrapeResult.events.map((event) => `[${event.step}] ${event.detail}`).join("\n")}
+            />
+
+            <h3>HTML</h3>
             <textarea readOnly rows={18} value={scrapeResult.html ?? ""} />
           </div>
         )}

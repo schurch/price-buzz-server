@@ -103,10 +103,31 @@ export type TrackerStatus = {
 export type ScrapeDebugResult = {
   inputUrl: string;
   finalUrl: string | null;
-  fetchMode: "http" | "browser" | null;
+  fetchMode: "http" | "browser" | "regional-http" | "regional-browser" | null;
   pageTitle: string | null;
   blockedMessage: string | null;
   errorMessage: string | null;
   html: string | null;
   htmlBytes: number | null;
+  scrapePreferences: {
+    acceptLanguage: string | null;
+    browserLocale: string | null;
+    browserTimezone: string | null;
+  } | null;
+  inferredRegion: string | null;
+  requestHeaders: Record<string, string>;
+  browserFallbackSuggested: boolean | null;
+  detection: {
+    name: string;
+    pageTitle: string | null;
+    url: string;
+    currency: string;
+    detectionSource: string;
+    previewRawText: string;
+    previewPrice: string;
+  } | null;
+  events: Array<{
+    step: string;
+    detail: string;
+  }>;
 };

@@ -1311,6 +1311,14 @@ function logScrapeEvent(event: string, input: Record<string, string | null | und
   console.info(`[scraper:${event}] ${JSON.stringify(payload)}`);
 }
 
+function pushScrapeDebugEvent(
+  events: Array<{ step: string; detail: string }>,
+  step: string,
+  detail: string
+): void {
+  events.push({ step, detail });
+}
+
 function shouldTryBrowserForHttpPage(rawUrl: string, page: { html: string; url: string }): {
   shouldTry: boolean;
   blockedMessage: string | null;
@@ -1466,9 +1474,19 @@ async function fetchHtmlWithPreferences(
 
 function buildScrapeDebugResult(
   inputUrl: string,
-  page: { html: string; url: string; fetchMode: "http" | "browser" }
+  page: { html: string; url: string; fetchMode: FetchMode },
+  scrapePreferences: ScrapePreferences | null,
+  requestHeaders: Record<string, string>,
+  browserFallbackSuggested: boolean | null,
+  events: Array<{ step: string; detail: string }>
 ): ScrapeDebugResult {
   const pageTitle = /<title[^>]*>(.*?)<\/title>/i.exec(page.html)?.[1]?.trim() || null;
+  let detection: DetectionResult | null = null;
+  try {
+    detection = detectTrackedItemFromHtml(page.url, page.html);
+  } catch {
+    detection = null;
+  }
   return {
     inputUrl,
     finalUrl: page.url,
@@ -1477,7 +1495,13 @@ function buildScrapeDebugResult(
     blockedMessage: detectBlockedPageMessage(page.html, page.url, pageTitle ?? ""),
     errorMessage: null,
     html: page.html,
-    htmlBytes: Buffer.byteLength(page.html, "utf8")
+    htmlBytes: Buffer.byteLength(page.html, "utf8"),
+    scrapePreferences,
+    inferredRegion: inferPreferredRegion(scrapePreferences),
+    requestHeaders,
+    browserFallbackSuggested,
+    detection,
+    events
   };
 }
 
@@ -1492,29 +1516,96 @@ export async function fetchScrapeDebugResult(
       headers.Referer = referer;
     }
   }
+  const events: Array<{ step: string; detail: string }> = [];
+  pushScrapeDebugEvent(events, "start", `Input URL: ${rawUrl}`);
+  pushScrapeDebugEvent(
+    events,
+    "localisation",
+    `acceptLanguage=${scrapePreferences?.acceptLanguage ?? "n/a"}, locale=${scrapePreferences?.browserLocale ?? "n/a"}, timezone=${scrapePreferences?.browserTimezone ?? "n/a"}, inferredRegion=${inferPreferredRegion(scrapePreferences) ?? "n/a"}`
+  );
+  pushScrapeDebugEvent(
+    events,
+    "headers",
+    `User-Agent=${headers["User-Agent"] ?? "n/a"}, Referer=${headers.Referer ?? "n/a"}, Accept-Language=${scrapePreferences?.acceptLanguage ?? "n/a"}`
+  );
+  const tryRegionalFallback = async (reason: string): Promise<ScrapeDebugResult | null> => {
+    if (!inferPreferredRegion(scrapePreferences)) {
+      return null;
+    }
+
+    try {
+      pushScrapeDebugEvent(events, "regional-fetch", `Attempting regional fallback because ${reason}.`);
+      const regionalPage = await fetchHtmlWithRegionalFallback(rawUrl, scrapePreferences);
+      pushScrapeDebugEvent(events, "regional-fetch", `Regional fetch succeeded with final URL ${regionalPage.url}.`);
+      return buildScrapeDebugResult(rawUrl, regionalPage, scrapePreferences, headers, true, events);
+    } catch (regionalError) {
+      pushScrapeDebugEvent(
+        events,
+        "regional-fetch",
+        `Regional fallback failed: ${regionalError instanceof Error ? regionalError.message : String(regionalError)}`
+      );
+      return null;
+    }
+  };
 
   try {
+    pushScrapeDebugEvent(events, "http-fetch", "Attempting standard HTTP fetch.");
     const httpPage = await fetchHtmlWithHttp(rawUrl, headers, scrapePreferences);
-    const { shouldTry } = shouldTryBrowserForHttpPage(rawUrl, httpPage);
+    pushScrapeDebugEvent(events, "http-fetch", `HTTP fetch succeeded with final URL ${httpPage.url}.`);
+    const { shouldTry, blockedMessage } = shouldTryBrowserForHttpPage(rawUrl, httpPage);
+    pushScrapeDebugEvent(
+      events,
+      "http-evaluation",
+      shouldTry
+        ? `Browser fallback suggested${blockedMessage ? ` because: ${blockedMessage}` : " due to page heuristics"}.`
+        : "HTTP result looked usable without browser fallback."
+    );
     if (shouldTry) {
       try {
+        pushScrapeDebugEvent(events, "browser-fetch", "Attempting browser fetch after HTTP evaluation.");
         const browserPage = await fetchHtmlWithBrowser(rawUrl, headers, scrapePreferences);
-        return buildScrapeDebugResult(rawUrl, { ...browserPage, fetchMode: "browser" });
+        pushScrapeDebugEvent(events, "browser-fetch", `Browser fetch succeeded with final URL ${browserPage.url}.`);
+        return buildScrapeDebugResult(rawUrl, { ...browserPage, fetchMode: "browser" }, scrapePreferences, headers, shouldTry, events);
       } catch (browserError) {
+        pushScrapeDebugEvent(
+          events,
+          "browser-fetch",
+          `Browser fetch failed: ${browserError instanceof Error ? browserError.message : String(browserError)}`
+        );
+        const regionalResult = await tryRegionalFallback("browser fetch failed after HTTP evaluation");
+        if (regionalResult) {
+          return regionalResult;
+        }
         return {
-          ...buildScrapeDebugResult(rawUrl, { ...httpPage, fetchMode: "http" }),
+          ...buildScrapeDebugResult(rawUrl, { ...httpPage, fetchMode: "http" }, scrapePreferences, headers, shouldTry, events),
           errorMessage: browserError instanceof Error ? browserError.message : String(browserError)
         };
       }
     }
 
-    return buildScrapeDebugResult(rawUrl, { ...httpPage, fetchMode: "http" });
+    return buildScrapeDebugResult(rawUrl, { ...httpPage, fetchMode: "http" }, scrapePreferences, headers, shouldTry, events);
   } catch (error) {
     if (shouldUseBrowserFallback(error)) {
       try {
+        pushScrapeDebugEvent(
+          events,
+          "http-fetch",
+          `HTTP fetch failed with browser-fallback-eligible error: ${error instanceof Error ? error.message : String(error)}`
+        );
+        pushScrapeDebugEvent(events, "browser-fetch", "Attempting browser fetch after HTTP failure.");
         const browserPage = await fetchHtmlWithBrowser(rawUrl, headers, scrapePreferences);
-        return buildScrapeDebugResult(rawUrl, { ...browserPage, fetchMode: "browser" });
+        pushScrapeDebugEvent(events, "browser-fetch", `Browser fetch succeeded with final URL ${browserPage.url}.`);
+        return buildScrapeDebugResult(rawUrl, { ...browserPage, fetchMode: "browser" }, scrapePreferences, headers, true, events);
       } catch (browserError) {
+        pushScrapeDebugEvent(
+          events,
+          "browser-fetch",
+          `Browser fetch failed: ${browserError instanceof Error ? browserError.message : String(browserError)}`
+        );
+        const regionalResult = await tryRegionalFallback("browser fetch failed after HTTP transport error");
+        if (regionalResult) {
+          return regionalResult;
+        }
         return {
           inputUrl: rawUrl,
           finalUrl: null,
@@ -1523,11 +1614,26 @@ export async function fetchScrapeDebugResult(
           blockedMessage: null,
           errorMessage: browserError instanceof Error ? browserError.message : String(browserError),
           html: null,
-          htmlBytes: null
+          htmlBytes: null,
+          scrapePreferences,
+          inferredRegion: inferPreferredRegion(scrapePreferences),
+          requestHeaders: headers,
+          browserFallbackSuggested: true,
+          detection: null,
+          events
         };
       }
     }
 
+    pushScrapeDebugEvent(
+      events,
+      "http-fetch",
+      `Scrape failed before a usable page was returned: ${error instanceof Error ? error.message : String(error)}`
+    );
+    const regionalResult = await tryRegionalFallback("local scraping failed");
+    if (regionalResult) {
+      return regionalResult;
+    }
     return {
       inputUrl: rawUrl,
       finalUrl: null,
@@ -1536,7 +1642,13 @@ export async function fetchScrapeDebugResult(
       blockedMessage: error instanceof AccessBlockedError ? error.message : null,
       errorMessage: error instanceof Error ? error.message : String(error),
       html: null,
-      htmlBytes: null
+      htmlBytes: null,
+      scrapePreferences,
+      inferredRegion: inferPreferredRegion(scrapePreferences),
+      requestHeaders: headers,
+      browserFallbackSuggested: shouldUseBrowserFallback(error),
+      detection: null,
+      events
     };
   }
 }

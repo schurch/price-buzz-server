@@ -166,10 +166,19 @@ export type DetectionResult = {
 export type ScrapeDebugResult = {
   inputUrl: string;
   finalUrl: string | null;
-  fetchMode: "http" | "browser" | null;
+  fetchMode: "http" | "browser" | "regional-http" | "regional-browser" | null;
   pageTitle: string | null;
   blockedMessage: string | null;
   errorMessage: string | null;
   html: string | null;
   htmlBytes: number | null;
+  scrapePreferences: ScrapePreferences | null;
+  inferredRegion: string | null;
+  requestHeaders: Record<string, string>;
+  browserFallbackSuggested: boolean | null;
+  detection: DetectionResult | null;
+  events: Array<{
+    step: string;
+    detail: string;
+  }>;
 };
