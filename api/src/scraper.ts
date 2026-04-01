@@ -1225,6 +1225,141 @@ function buildDetectionResult(input: {
   };
 }
 
+type HtmlDetectionContext = {
+  finalUrl: string;
+  pageTitle: string | null;
+  name: string;
+  pageCurrency: string;
+};
+
+type DetectionCandidateKind = "captured-offer" | "generic" | "json-ld";
+
+type DetectionCandidate = {
+  kind: DetectionCandidateKind;
+  result: DetectionResult;
+};
+
+function buildDetectionContext(finalUrl: string, html: string): HtmlDetectionContext {
+  const $ = cheerio.load(html);
+  const pageTitle = $("title").first().text().trim() || null;
+  const blockedMessage = detectBlockedPageMessage(html, finalUrl, pageTitle ?? "");
+  if (blockedMessage) {
+    throw new AccessBlockedError(blockedMessage);
+  }
+
+  return {
+    finalUrl,
+    pageTitle,
+    name: detectSpecificProductName(finalUrl, html, $, pageTitle || finalUrl),
+    pageCurrency: detectCurrency(html, $)
+  };
+}
+
+function collectDetectionCandidates(
+  context: HtmlDetectionContext,
+  html: string
+): DetectionCandidate[] {
+  const $ = cheerio.load(html);
+  const candidates: DetectionCandidate[] = [];
+
+  const capturedOfferPrice = detectCapturedOfferPrice(html, context.name);
+  if (capturedOfferPrice) {
+    candidates.push({
+      kind: "captured-offer",
+      result: buildDetectionResult({
+        url: context.finalUrl,
+        name: context.name,
+        pageTitle: context.pageTitle,
+        currency: capturedOfferPrice.currency || context.pageCurrency,
+        detectionSource: "auto:captured-offer-price",
+        previewRawText: capturedOfferPrice.previewRawText,
+        previewPrice: capturedOfferPrice.previewPrice
+      })
+    });
+  }
+
+  const genericCandidate = detectGenericPriceCandidate(html, $);
+  if (genericCandidate) {
+    candidates.push({
+      kind: "generic",
+      result: buildDetectionResult({
+        url: context.finalUrl,
+        name: context.name,
+        pageTitle: context.pageTitle,
+        currency: genericCandidate.currency || context.pageCurrency,
+        detectionSource: genericCandidate.detectionSource,
+        previewRawText: genericCandidate.previewRawText,
+        previewPrice: genericCandidate.previewPrice
+      })
+    });
+  }
+
+  const jsonLdPrice = detectJsonLdPrice(html);
+  if (jsonLdPrice) {
+    candidates.push({
+      kind: "json-ld",
+      result: buildDetectionResult({
+        url: context.finalUrl,
+        name: context.name,
+        pageTitle: context.pageTitle,
+        currency: jsonLdPrice.currency || context.pageCurrency,
+        detectionSource: "auto:json-ld-price",
+        previewRawText: jsonLdPrice.previewRawText,
+        previewPrice: jsonLdPrice.previewPrice
+      })
+    });
+  }
+
+  return candidates;
+}
+
+function chooseBestDetectionCandidate(
+  candidates: DetectionCandidate[],
+  pageCurrency: string
+): DetectionResult | null {
+  const capturedCandidate = candidates.find((candidate) => candidate.kind === "captured-offer");
+  if (capturedCandidate) {
+    return capturedCandidate.result;
+  }
+
+  const genericCandidate = candidates.find((candidate) => candidate.kind === "generic");
+  const jsonLdCandidate = candidates.find((candidate) => candidate.kind === "json-ld");
+  const genericResult = genericCandidate?.result ?? null;
+  const jsonLdResult = jsonLdCandidate?.result ?? null;
+
+  if (genericResult && jsonLdResult) {
+    const genericHasExplicitCurrency = hasExplicitCurrencyMarker(genericResult.previewRawText);
+    const jsonLdHasExplicitCurrency = hasExplicitCurrencyMarker(jsonLdResult.previewRawText)
+      || isSupportedCurrencyCode(jsonLdResult.currency);
+    const pageHasExplicitCurrency = Boolean(pageCurrency);
+    const genericMatchesPageCurrency = pageHasExplicitCurrency && genericResult.currency === pageCurrency;
+    const jsonLdMatchesPageCurrency = pageHasExplicitCurrency && jsonLdResult.currency === pageCurrency;
+    if (
+      genericHasExplicitCurrency
+      && genericResult.currency
+      && jsonLdHasExplicitCurrency
+      && jsonLdResult.currency
+      && genericResult.currency !== jsonLdResult.currency
+    ) {
+      return genericResult;
+    }
+    if (genericMatchesPageCurrency && !jsonLdMatchesPageCurrency) {
+      return genericResult;
+    }
+    return jsonLdResult;
+  }
+
+  if (jsonLdResult) {
+    return jsonLdResult;
+  }
+
+  if (genericResult) {
+    return genericResult;
+  }
+
+  return null;
+}
+
 function detectJsonLdPrice(html: string): { previewRawText: string; previewPrice: string; currency: string } | null {
   const scriptPattern = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
   type Candidate = { previewRawText: string; previewPrice: string; currency: string; score: number };
@@ -1856,78 +1991,13 @@ export async function detectTrackedItem(rawUrl: string, scrapePreferences: Scrap
 }
 
 export function detectTrackedItemFromHtml(finalUrl: string, html: string): DetectionResult {
-  const $ = cheerio.load(html);
-  const pageTitle = $("title").first().text().trim() || null;
-  const blockedMessage = detectBlockedPageMessage(html, finalUrl, pageTitle ?? "");
-  if (blockedMessage) {
-    throw new AccessBlockedError(blockedMessage);
-  }
-  const name = detectSpecificProductName(finalUrl, html, $, pageTitle || finalUrl);
-  const pageCurrency = detectCurrency(html, $);
-  const capturedOfferPrice = detectCapturedOfferPrice(html, name);
-  const genericCandidate = detectGenericPriceCandidate(html, $);
-  const jsonLdPrice = detectJsonLdPrice(html);
-  const capturedResult = capturedOfferPrice ? buildDetectionResult({
-    url: finalUrl,
-    name,
-    pageTitle,
-    currency: capturedOfferPrice.currency || pageCurrency,
-    detectionSource: "auto:captured-offer-price",
-    previewRawText: capturedOfferPrice.previewRawText,
-    previewPrice: capturedOfferPrice.previewPrice
-  }) : null;
-  const genericResult = genericCandidate ? buildDetectionResult({
-    url: finalUrl,
-    name,
-    pageTitle,
-    currency: genericCandidate.currency || pageCurrency,
-    detectionSource: genericCandidate.detectionSource,
-    previewRawText: genericCandidate.previewRawText,
-    previewPrice: genericCandidate.previewPrice
-  }) : null;
-  const jsonLdResult = jsonLdPrice ? buildDetectionResult({
-      url: finalUrl,
-      name,
-      pageTitle,
-      currency: jsonLdPrice.currency || pageCurrency,
-      detectionSource: "auto:json-ld-price",
-      previewRawText: jsonLdPrice.previewRawText,
-      previewPrice: jsonLdPrice.previewPrice
-    }) : null;
-
-  if (capturedResult) {
-    return capturedResult;
+  const context = buildDetectionContext(finalUrl, html);
+  const candidates = collectDetectionCandidates(context, html);
+  const winner = chooseBestDetectionCandidate(candidates, context.pageCurrency);
+  if (winner) {
+    return winner;
   }
 
-  if (genericResult && jsonLdResult) {
-    const genericHasExplicitCurrency = hasExplicitCurrencyMarker(genericResult.previewRawText);
-    const jsonLdHasExplicitCurrency = hasExplicitCurrencyMarker(jsonLdResult.previewRawText)
-      || isSupportedCurrencyCode(jsonLdResult.currency);
-    const pageHasExplicitCurrency = Boolean(pageCurrency);
-    const genericMatchesPageCurrency = pageHasExplicitCurrency && genericResult.currency === pageCurrency;
-    const jsonLdMatchesPageCurrency = pageHasExplicitCurrency && jsonLdResult.currency === pageCurrency;
-    if (
-      genericHasExplicitCurrency
-      && genericResult.currency
-      && jsonLdHasExplicitCurrency
-      && jsonLdResult.currency
-      && genericResult.currency !== jsonLdResult.currency
-    ) {
-      return genericResult;
-    }
-    if (genericMatchesPageCurrency && !jsonLdMatchesPageCurrency) {
-      return genericResult;
-    }
-    return jsonLdResult;
-  }
-
-  if (jsonLdResult) {
-    return jsonLdResult;
-  }
-
-  if (genericResult) {
-    return genericResult;
-  }
   throw new Error("Could not automatically detect a price on this page yet.");
 }
 
