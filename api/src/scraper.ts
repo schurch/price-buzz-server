@@ -1607,19 +1607,46 @@ function detectCapturedOfferPrice(
   } : null;
 }
 
-function logScrapeEvent(event: string, input: Record<string, string | null | undefined>): void {
-  const payload = Object.fromEntries(
-    Object.entries(input).map(([key, value]) => [key, value ?? ""])
-  );
-  console.info(`[scraper:${event}] ${JSON.stringify(payload)}`);
-}
-
 function pushScrapeDebugEvent(
   events: Array<{ step: string; detail: string }>,
   step: string,
   detail: string
 ): void {
   events.push({ step, detail });
+}
+
+type ScrapeObserver = (step: string, detail: string) => void;
+
+type ResolvedPage = {
+  html: string;
+  url: string;
+  fetchMode: FetchMode;
+};
+
+type ResolvedFetch = {
+  page: ResolvedPage;
+  requestHeaders: Record<string, string>;
+  browserFallbackSuggested: boolean | null;
+};
+
+function noopScrapeObserver(): void {
+  // Intentionally empty.
+}
+
+function buildRequestHeaders(
+  rawUrl: string,
+  headersJson: string | null,
+  scrapePreferences: ScrapePreferences | null
+): Record<string, string> {
+  const headers = parseHeaders(headersJson);
+  if (!headers.Referer) {
+    const referer = defaultReferer(rawUrl);
+    if (referer) {
+      headers.Referer = referer;
+    }
+  }
+
+  return headers;
 }
 
 function shouldTryBrowserForHttpPage(rawUrl: string, page: { html: string; url: string }): {
@@ -1719,64 +1746,185 @@ async function fetchHtmlWithRegionalFallback(
 async function fetchHtmlWithPreferences(
   rawUrl: string,
   headersJson: string | null,
-  scrapePreferences: ScrapePreferences | null
-): Promise<{
-  html: string;
-  url: string;
-  fetchMode: FetchMode;
-}> {
-  const headers = parseHeaders(headersJson);
-  if (!headers.Referer) {
-    const referer = defaultReferer(rawUrl);
-    if (referer) {
-      headers.Referer = referer;
+  scrapePreferences: ScrapePreferences | null,
+  observer: ScrapeObserver = noopScrapeObserver
+): Promise<ResolvedFetch> {
+  const headers = buildRequestHeaders(rawUrl, headersJson, scrapePreferences);
+  const tryRegionalFallback = async (
+    expectedCurrency: string | null | undefined,
+    reason: string
+  ): Promise<ResolvedPage | null> => {
+    if (!resolveRegionalFallbackRegion(scrapePreferences, expectedCurrency)) {
+      return null;
     }
-  }
+
+    try {
+      observer("regional-fetch", `Attempting regional fallback because ${reason}.`);
+      const page = await fetchHtmlWithRegionalFallback(rawUrl, scrapePreferences, expectedCurrency);
+      observer("regional-fetch", `Regional fetch succeeded with final URL ${page.url}.`);
+      return page;
+    } catch (regionalError) {
+      observer(
+        "regional-fetch",
+        `Regional fallback failed: ${regionalError instanceof Error ? regionalError.message : String(regionalError)}`
+      );
+      return null;
+    }
+  };
 
   try {
+    observer("http-fetch", "Attempting standard HTTP fetch.");
     const page = await fetchHtmlWithHttp(rawUrl, headers, scrapePreferences);
+    observer("http-fetch", `HTTP fetch succeeded with final URL ${page.url}.`);
     const { shouldTry, blockedMessage } = shouldTryBrowserForHttpPage(rawUrl, page);
+    observer(
+      "http-evaluation",
+      shouldTry
+        ? `Browser fallback suggested${blockedMessage ? ` because: ${blockedMessage}` : " due to page heuristics"}.`
+        : "HTTP result looked usable without browser fallback."
+    );
     if (shouldTry) {
       try {
+        observer("browser-fetch", "Attempting browser fetch after HTTP evaluation.");
         const browserPage = await fetchHtmlWithBrowser(rawUrl, headers, scrapePreferences);
-        return { ...browserPage, fetchMode: "browser" };
+        observer("browser-fetch", `Browser fetch succeeded with final URL ${browserPage.url}.`);
+        return {
+          page: { ...browserPage, fetchMode: "browser" },
+          requestHeaders: headers,
+          browserFallbackSuggested: shouldTry
+        };
       } catch (browserError) {
+        observer(
+          "browser-fetch",
+          `Browser fetch failed: ${browserError instanceof Error ? browserError.message : String(browserError)}`
+        );
         if (browserError instanceof AccessBlockedError) {
+          const regionalPage = await tryRegionalFallback(null, "browser fetch was blocked after HTTP evaluation");
+          if (regionalPage) {
+            return {
+              page: regionalPage,
+              requestHeaders: headers,
+              browserFallbackSuggested: true
+            };
+          }
           throw browserError;
         }
         if (blockedMessage) {
+          const regionalPage = await tryRegionalFallback(null, "browser fetch failed after HTTP evaluation");
+          if (regionalPage) {
+            return {
+              page: regionalPage,
+              requestHeaders: headers,
+              browserFallbackSuggested: true
+            };
+          }
           throw new AccessBlockedError(blockedMessage);
         }
         throw browserError;
       }
     }
-    return { ...page, fetchMode: "http" };
+    return {
+      page: { ...page, fetchMode: "http" },
+      requestHeaders: headers,
+      browserFallbackSuggested: shouldTry
+    };
   } catch (error) {
     if (error instanceof AccessBlockedError) {
-      try {
-        return await fetchHtmlWithRegionalFallback(rawUrl, scrapePreferences);
-      } catch {
-        throw error;
+      const regionalPage = await tryRegionalFallback(null, "local scraping was blocked");
+      if (regionalPage) {
+        return {
+          page: regionalPage,
+          requestHeaders: headers,
+          browserFallbackSuggested: true
+        };
       }
-    }
-    if (shouldUseBrowserFallback(error)) {
-      try {
-        const page = await fetchHtmlWithBrowser(rawUrl, headers, scrapePreferences);
-        return { ...page, fetchMode: "browser" };
-      } catch (browserError) {
-        try {
-          return await fetchHtmlWithRegionalFallback(rawUrl, scrapePreferences);
-        } catch {
-          throw browserError;
-        }
-      }
-    }
-    try {
-      return await fetchHtmlWithRegionalFallback(rawUrl, scrapePreferences);
-    } catch {
       throw error;
     }
+    if (shouldUseBrowserFallback(error)) {
+      observer(
+        "http-fetch",
+        `HTTP fetch failed with browser-fallback-eligible error: ${error instanceof Error ? error.message : String(error)}`
+      );
+      try {
+        observer("browser-fetch", "Attempting browser fetch after HTTP failure.");
+        const page = await fetchHtmlWithBrowser(rawUrl, headers, scrapePreferences);
+        observer("browser-fetch", `Browser fetch succeeded with final URL ${page.url}.`);
+        return {
+          page: { ...page, fetchMode: "browser" },
+          requestHeaders: headers,
+          browserFallbackSuggested: true
+        };
+      } catch (browserError) {
+        observer(
+          "browser-fetch",
+          `Browser fetch failed: ${browserError instanceof Error ? browserError.message : String(browserError)}`
+        );
+        const regionalPage = await tryRegionalFallback(null, "browser fetch failed after HTTP transport error");
+        if (regionalPage) {
+          return {
+            page: regionalPage,
+            requestHeaders: headers,
+            browserFallbackSuggested: true
+          };
+        }
+        throw browserError;
+      }
+    }
+    observer(
+      "http-fetch",
+      `Scrape failed before a usable page was returned: ${error instanceof Error ? error.message : String(error)}`
+    );
+    const regionalPage = await tryRegionalFallback(null, "local scraping failed");
+    if (regionalPage) {
+      return {
+        page: regionalPage,
+        requestHeaders: headers,
+        browserFallbackSuggested: shouldUseBrowserFallback(error)
+      };
+    }
+    throw error;
   }
+}
+
+async function resolveDetectedPage(
+  rawUrl: string,
+  scrapePreferences: ScrapePreferences | null,
+  observer: ScrapeObserver = noopScrapeObserver
+): Promise<ResolvedFetch & { detection: DetectionResult }> {
+  let resolved = await fetchHtmlWithPreferences(rawUrl, null, scrapePreferences, observer);
+  let detection = detectTrackedItemFromHtml(resolved.page.url, resolved.page.html);
+
+  if (
+    (resolved.page.fetchMode === "http" || resolved.page.fetchMode === "browser")
+    && shouldPreferNzRegionalFallback(scrapePreferences, detection)
+  ) {
+    try {
+      observer(
+        "regional-fetch",
+        `Attempting regional fallback because local ${resolved.page.fetchMode} fetch detected ${detection.currency || "no currency"} instead of NZD.`
+      );
+      const regionalPage = await fetchHtmlWithRegionalFallback(rawUrl, scrapePreferences, detection.currency);
+      observer("regional-fetch", `Regional fetch succeeded with final URL ${regionalPage.url}.`);
+      const regionalDetection = detectTrackedItemFromHtml(regionalPage.url, regionalPage.html);
+      if (regionalDetection.currency === "NZD") {
+        resolved = {
+          ...resolved,
+          page: regionalPage
+        };
+        detection = regionalDetection;
+      }
+    } catch (error) {
+      observer(
+        "regional-fetch",
+        `Regional fallback failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  return {
+    ...resolved,
+    detection
+  };
 }
 
 function buildScrapeDebugResult(
@@ -1816,13 +1964,7 @@ export async function fetchScrapeDebugResult(
   rawUrl: string,
   scrapePreferences: ScrapePreferences | null = null
 ): Promise<ScrapeDebugResult> {
-  const headers = parseHeaders(null);
-  if (!headers.Referer) {
-    const referer = defaultReferer(rawUrl);
-    if (referer) {
-      headers.Referer = referer;
-    }
-  }
+  const headers = buildRequestHeaders(rawUrl, null, scrapePreferences);
   const events: Array<{ step: string; detail: string }> = [];
   pushScrapeDebugEvent(events, "start", `Input URL: ${rawUrl}`);
   pushScrapeDebugEvent(
@@ -1835,112 +1977,25 @@ export async function fetchScrapeDebugResult(
     "headers",
     `User-Agent=${headers["User-Agent"] ?? "n/a"}, Referer=${headers.Referer ?? "n/a"}, Accept-Language=${scrapePreferences?.acceptLanguage ?? "n/a"}`
   );
-  const tryRegionalFallback = async (reason: string): Promise<ScrapeDebugResult | null> => {
-    if (!inferPreferredRegion(scrapePreferences)) {
-      return null;
-    }
-
-    try {
-      pushScrapeDebugEvent(events, "regional-fetch", `Attempting regional fallback because ${reason}.`);
-      const regionalPage = await fetchHtmlWithRegionalFallback(rawUrl, scrapePreferences);
-      pushScrapeDebugEvent(events, "regional-fetch", `Regional fetch succeeded with final URL ${regionalPage.url}.`);
-      return buildScrapeDebugResult(rawUrl, regionalPage, scrapePreferences, headers, true, events);
-    } catch (regionalError) {
-      pushScrapeDebugEvent(
-        events,
-        "regional-fetch",
-        `Regional fallback failed: ${regionalError instanceof Error ? regionalError.message : String(regionalError)}`
-      );
-      return null;
-    }
-  };
 
   try {
-    pushScrapeDebugEvent(events, "http-fetch", "Attempting standard HTTP fetch.");
-    const httpPage = await fetchHtmlWithHttp(rawUrl, headers, scrapePreferences);
-    pushScrapeDebugEvent(events, "http-fetch", `HTTP fetch succeeded with final URL ${httpPage.url}.`);
-    const { shouldTry, blockedMessage } = shouldTryBrowserForHttpPage(rawUrl, httpPage);
-    pushScrapeDebugEvent(
-      events,
-      "http-evaluation",
-      shouldTry
-        ? `Browser fallback suggested${blockedMessage ? ` because: ${blockedMessage}` : " due to page heuristics"}.`
-        : "HTTP result looked usable without browser fallback."
+    const resolved = await resolveDetectedPage(
+      rawUrl,
+      scrapePreferences,
+      (step, detail) => pushScrapeDebugEvent(events, step, detail)
     );
-    if (shouldTry) {
-      try {
-        pushScrapeDebugEvent(events, "browser-fetch", "Attempting browser fetch after HTTP evaluation.");
-        const browserPage = await fetchHtmlWithBrowser(rawUrl, headers, scrapePreferences);
-        pushScrapeDebugEvent(events, "browser-fetch", `Browser fetch succeeded with final URL ${browserPage.url}.`);
-        return buildScrapeDebugResult(rawUrl, { ...browserPage, fetchMode: "browser" }, scrapePreferences, headers, shouldTry, events);
-      } catch (browserError) {
-        pushScrapeDebugEvent(
-          events,
-          "browser-fetch",
-          `Browser fetch failed: ${browserError instanceof Error ? browserError.message : String(browserError)}`
-        );
-        const regionalResult = await tryRegionalFallback("browser fetch failed after HTTP evaluation");
-        if (regionalResult) {
-          return regionalResult;
-        }
-        return {
-          ...buildScrapeDebugResult(rawUrl, { ...httpPage, fetchMode: "http" }, scrapePreferences, headers, shouldTry, events),
-          errorMessage: browserError instanceof Error ? browserError.message : String(browserError)
-        };
-      }
-    }
-
-    return buildScrapeDebugResult(rawUrl, { ...httpPage, fetchMode: "http" }, scrapePreferences, headers, shouldTry, events);
+    return {
+      ...buildScrapeDebugResult(
+        rawUrl,
+        resolved.page,
+        scrapePreferences,
+        resolved.requestHeaders,
+        resolved.browserFallbackSuggested,
+        events
+      ),
+      detection: resolved.detection
+    };
   } catch (error) {
-    if (shouldUseBrowserFallback(error)) {
-      try {
-        pushScrapeDebugEvent(
-          events,
-          "http-fetch",
-          `HTTP fetch failed with browser-fallback-eligible error: ${error instanceof Error ? error.message : String(error)}`
-        );
-        pushScrapeDebugEvent(events, "browser-fetch", "Attempting browser fetch after HTTP failure.");
-        const browserPage = await fetchHtmlWithBrowser(rawUrl, headers, scrapePreferences);
-        pushScrapeDebugEvent(events, "browser-fetch", `Browser fetch succeeded with final URL ${browserPage.url}.`);
-        return buildScrapeDebugResult(rawUrl, { ...browserPage, fetchMode: "browser" }, scrapePreferences, headers, true, events);
-      } catch (browserError) {
-        pushScrapeDebugEvent(
-          events,
-          "browser-fetch",
-          `Browser fetch failed: ${browserError instanceof Error ? browserError.message : String(browserError)}`
-        );
-        const regionalResult = await tryRegionalFallback("browser fetch failed after HTTP transport error");
-        if (regionalResult) {
-          return regionalResult;
-        }
-        return {
-          inputUrl: rawUrl,
-          finalUrl: null,
-          fetchMode: null,
-          pageTitle: null,
-          blockedMessage: null,
-          errorMessage: browserError instanceof Error ? browserError.message : String(browserError),
-          html: null,
-          htmlBytes: null,
-          scrapePreferences,
-          inferredRegion: inferPreferredRegion(scrapePreferences),
-          requestHeaders: headers,
-          browserFallbackSuggested: true,
-          detection: null,
-          events
-        };
-      }
-    }
-
-    pushScrapeDebugEvent(
-      events,
-      "http-fetch",
-      `Scrape failed before a usable page was returned: ${error instanceof Error ? error.message : String(error)}`
-    );
-    const regionalResult = await tryRegionalFallback("local scraping failed");
-    if (regionalResult) {
-      return regionalResult;
-    }
     return {
       inputUrl: rawUrl,
       finalUrl: null,
@@ -1961,35 +2016,8 @@ export async function fetchScrapeDebugResult(
 }
 
 export async function detectTrackedItem(rawUrl: string, scrapePreferences: ScrapePreferences | null = null): Promise<DetectionResult> {
-  let page = await fetchHtmlWithPreferences(rawUrl, null, scrapePreferences);
-  let result = detectTrackedItemFromHtml(page.url, page.html);
-
-  if (
-    (page.fetchMode === "http" || page.fetchMode === "browser")
-    && shouldPreferNzRegionalFallback(scrapePreferences, result)
-  ) {
-    try {
-      const regionalPage = await fetchHtmlWithRegionalFallback(rawUrl, scrapePreferences, result.currency);
-      const regionalResult = detectTrackedItemFromHtml(regionalPage.url, regionalPage.html);
-      if (regionalResult.currency === "NZD") {
-        page = regionalPage;
-        result = regionalResult;
-      }
-    } catch {
-      // Keep the local result if the regional fallback cannot improve it.
-    }
-  }
-
-  logScrapeEvent("detect", {
-    inputUrl: rawUrl,
-    finalUrl: page.url,
-    fetchMode: page.fetchMode,
-    detectionSource: result.detectionSource,
-    previewRawText: result.previewRawText,
-    previewPrice: result.previewPrice,
-    currency: result.currency
-  });
-  return result;
+  const resolved = await resolveDetectedPage(rawUrl, scrapePreferences);
+  return resolved.detection;
 }
 
 export function detectTrackedItemFromHtml(finalUrl: string, html: string): DetectionResult {
@@ -2015,7 +2043,8 @@ export async function fetchTrackedItemCheck(
   errorMessage?: string | null;
 }> {
   try {
-    let page = await fetchHtmlWithPreferences(item.url, item.headersJson, scrapePreferences);
+    const resolved = await fetchHtmlWithPreferences(item.url, item.headersJson, scrapePreferences);
+    let page = resolved.page;
     let { rawText, price, currency } = extractTrackedItemCheckDataFromHtml(item, page.html);
 
     if (
@@ -2051,16 +2080,6 @@ export async function fetchTrackedItemCheck(
       }
     }
 
-    logScrapeEvent("check", {
-      inputUrl: item.url,
-      finalUrl: page.url,
-      fetchMode: page.fetchMode,
-      detectionSource: item.detectionSource,
-      rawText,
-      price,
-      currency: currency ?? item.currency
-    });
-
     return {
       status: "ok",
       checkedAt: utcNow(),
@@ -2069,11 +2088,6 @@ export async function fetchTrackedItemCheck(
       rawText
     };
   } catch (error) {
-    logScrapeEvent("check-error", {
-      inputUrl: item.url,
-      detectionSource: item.detectionSource,
-      errorMessage: error instanceof Error ? error.message : String(error)
-    });
     return {
       status: "error",
       checkedAt: utcNow(),

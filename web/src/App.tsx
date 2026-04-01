@@ -60,6 +60,23 @@ type AdminRunSummary = {
   }>;
 };
 
+function formatScrapeDebugForClipboard(scrapeResult: ScrapeDebugResult): string {
+  return [
+    `[start] Input URL: ${scrapeResult.inputUrl}`,
+    `[summary] fetchMode=${scrapeResult.fetchMode ?? "n/a"}, finalUrl=${scrapeResult.finalUrl ?? "n/a"}, pageTitle=${scrapeResult.pageTitle ?? "n/a"}, htmlBytes=${scrapeResult.htmlBytes ?? "n/a"}`,
+    `[localisation] acceptLanguage=${scrapeResult.scrapePreferences?.acceptLanguage ?? "n/a"}, locale=${scrapeResult.scrapePreferences?.browserLocale ?? "n/a"}, timezone=${scrapeResult.scrapePreferences?.browserTimezone ?? "n/a"}, inferredRegion=${scrapeResult.inferredRegion ?? "n/a"}`,
+    `[headers] ${JSON.stringify(scrapeResult.requestHeaders)}`,
+    `[blocked] ${scrapeResult.blockedMessage ?? "n/a"}`,
+    `[error] ${scrapeResult.errorMessage ?? "n/a"}`,
+    `[browserFallbackSuggested] ${scrapeResult.browserFallbackSuggested == null ? "n/a" : scrapeResult.browserFallbackSuggested ? "yes" : "no"}`,
+    `[detection] ${scrapeResult.detection ? JSON.stringify(scrapeResult.detection) : "none"}`,
+    "[event-log]",
+    scrapeResult.events.map((event) => `[${event.step}] ${event.detail}`).join("\n"),
+    "[html]",
+    scrapeResult.html ?? ""
+  ].join("\n");
+}
+
 function App() {
   const [session, setSession] = useState<SessionState>({ status: "loading", user: null });
 
@@ -783,6 +800,19 @@ function AdminPage({ user }: { user: User }) {
     }
   }
 
+  async function handleCopyScrapeDebug() {
+    if (!scrapeResult) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(formatScrapeDebugForClipboard(scrapeResult));
+      setBanner({ notice: "Scrape debug copied to clipboard.", error: null });
+    } catch (error) {
+      setBanner({ notice: null, error: error instanceof Error ? error.message : "Failed to copy scrape debug." });
+    }
+  }
+
   async function handleRunChecks() {
     try {
       const payload = await runChecks();
@@ -963,6 +993,11 @@ function AdminPage({ user }: { user: User }) {
         </form>
         {scrapeResult && (
           <div className="code-block large">
+            <div className="hero-actions">
+              <button className="button" type="button" onClick={() => void handleCopyScrapeDebug()}>
+                Copy debug info
+              </button>
+            </div>
             <div><strong>Fetch mode:</strong> {scrapeResult.fetchMode ?? "n/a"}</div>
             <div><strong>Final URL:</strong> {scrapeResult.finalUrl ?? "n/a"}</div>
             <div><strong>Page title:</strong> {scrapeResult.pageTitle ?? "n/a"}</div>
