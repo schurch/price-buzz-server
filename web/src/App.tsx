@@ -536,7 +536,7 @@ function DashboardPage({ user }: { user: User }) {
                             {item.history.length === 0 ? <li>No prices yet.</li> : item.history.map((entry) => (
                               <li key={entry.id}>
                                 <span>{formatTimestamp(entry.checkedAt)}</span>
-                                <span>{entry.status === "ok" ? formatPrice(entry.price, entry.currency) : entry.errorMessage ?? "Error"}</span>
+                                <span>{entry.status === "ok" ? formatPrice(entry.price, entry.currency) : "An error occurred"}</span>
                               </li>
                             ))}
                           </ul>
