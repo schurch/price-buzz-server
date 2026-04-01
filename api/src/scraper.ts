@@ -519,11 +519,25 @@ function shouldPreferNzRegionalFallback(
   scrapePreferences: ScrapePreferences | null,
   detection: DetectionResult
 ): boolean {
-  if (inferPreferredRegion(scrapePreferences) !== "nz") {
+  if (resolveRegionalFallbackRegion(scrapePreferences, detection.currency) !== "nz") {
     return false;
   }
 
   return !detection.currency || detection.currency !== "NZD";
+}
+
+export function resolveRegionalFallbackRegion(
+  scrapePreferences: ScrapePreferences | null,
+  expectedCurrency: string | null | undefined
+): "nz" | null {
+  const prefersNz = inferPreferredRegion(scrapePreferences) === "nz";
+  const expectsNz = (expectedCurrency ?? "").toUpperCase() === "NZD";
+
+  if (!prefersNz && !expectsNz) {
+    return null;
+  }
+
+  return "nz";
 }
 
 function shouldRetryTrackedItemCheckWithRegional(
@@ -531,10 +545,8 @@ function shouldRetryTrackedItemCheckWithRegional(
   expectedCurrency: string | null | undefined,
   currency: string | null | undefined
 ): boolean {
-  const prefersNz = inferPreferredRegion(scrapePreferences) === "nz";
-  const expectsNz = (expectedCurrency ?? "").toUpperCase() === "NZD";
-
-  if (!prefersNz && !expectsNz) {
+  const region = resolveRegionalFallbackRegion(scrapePreferences, expectedCurrency);
+  if (region !== "nz") {
     return false;
   }
 
@@ -795,6 +807,12 @@ function scoreJsonPriceKey(key: string): number {
   if (loweredKey === "price") {
     return -10;
   }
+  if (/discountprice|saleprice|currentprice|offerprice|sellingprice/.test(loweredKey)) {
+    return 22;
+  }
+  if (/originalprice|regularprice|wasprice|compareatprice|listprice/.test(loweredKey)) {
+    return -14;
+  }
   const hasCurrentSignal = /current|sale|offer|promo|online|member|club/.test(loweredKey);
   const hasPriceSignal = /price/.test(loweredKey);
   const hasGenericValueSignal = /amount|value/.test(loweredKey);
@@ -956,7 +974,47 @@ function scoreStructuredOfferContext(
   return score;
 }
 
-function buildJsonPriceExtraction(key: string, rawValue: string): { previewRawText: string; previewPrice: string } | null {
+function detectContextMinorUnitScale(
+  key: string,
+  rawValue: string,
+  context: string
+): number | null {
+  const normalizedValue = rawValue.trim();
+  const numeric = Number.parseFloat(normalizedValue);
+  const loweredKey = key.toLowerCase();
+  const loweredContext = context.toLowerCase();
+
+  if (normalizedValue.includes(".") || !/^\d+$/.test(normalizedValue) || !Number.isFinite(numeric) || numeric < 100) {
+    return null;
+  }
+
+  const explicitDecimalsMatch = /"currencyinfo"\s*:\s*\{[^}]*"decimals"\s*:\s*(\d+)/i.exec(context);
+  if (explicitDecimalsMatch) {
+    const decimals = Number.parseInt(explicitDecimalsMatch[1] ?? "", 10);
+    if (Number.isFinite(decimals) && decimals >= 0 && decimals <= 4) {
+      return 10 ** decimals;
+    }
+  }
+
+  if (
+    /discountprice|originalprice|voucherdiscount/.test(loweredKey)
+    && /"fmtprice"\s*:\s*\{[^}]*"(?:discountprice|originalprice|intermediateprice)"/i.test(context)
+  ) {
+    return 100;
+  }
+
+  if (
+    /discountprice|originalprice/.test(loweredKey)
+    && /"currencycode"\s*:\s*"[A-Z]{3}"/i.test(context)
+    && /price"\s*:\s*\{[\s\S]{0,220}"totalprice"/i.test(loweredContext)
+  ) {
+    return 100;
+  }
+
+  return null;
+}
+
+function buildJsonPriceExtraction(key: string, rawValue: string, context: string): { previewRawText: string; previewPrice: string } | null {
   const normalizedValue = rawValue.trim();
   if (!normalizedValue) {
     return null;
@@ -968,6 +1026,15 @@ function buildJsonPriceExtraction(key: string, rawValue: string): { previewRawTe
   }
 
   const loweredKey = key.toLowerCase();
+  const contextMinorUnitScale = detectContextMinorUnitScale(key, normalizedValue, context);
+  if (contextMinorUnitScale) {
+    const converted = (numeric / contextMinorUnitScale).toFixed(2);
+    return {
+      previewRawText: converted,
+      previewPrice: converted
+    };
+  }
+
   const looksLikeMinorUnitInteger = !normalizedValue.includes(".")
     && /^\d+$/.test(normalizedValue)
     && numeric >= 100
@@ -1112,7 +1179,10 @@ function detectGenericPriceCandidate(pageHtml: string, $: cheerio.CheerioAPI): {
       }
 
       try {
-        const extraction = buildJsonPriceExtraction(key, value);
+        const context = typeof match.index === "number"
+          ? pageHtml.slice(Math.max(0, match.index - 320), Math.min(pageHtml.length, match.index + 320))
+          : key;
+        const extraction = buildJsonPriceExtraction(key, value, context);
         if (!extraction) {
           continue;
         }
@@ -1490,13 +1560,14 @@ async function fetchHtmlViaRegionalProxy(
 
 async function fetchHtmlWithRegionalFallback(
   rawUrl: string,
-  scrapePreferences: ScrapePreferences | null
+  scrapePreferences: ScrapePreferences | null,
+  expectedCurrency: string | null | undefined = null
 ): Promise<{
   html: string;
   url: string;
   fetchMode: FetchMode;
 }> {
-  const preferredRegion = inferPreferredRegion(scrapePreferences);
+  const preferredRegion = resolveRegionalFallbackRegion(scrapePreferences, expectedCurrency);
   if (!preferredRegion) {
     throw new Error("No regional fallback configured for this request");
   }
@@ -1761,7 +1832,7 @@ export async function detectTrackedItem(rawUrl: string, scrapePreferences: Scrap
     && shouldPreferNzRegionalFallback(scrapePreferences, result)
   ) {
     try {
-      const regionalPage = await fetchHtmlWithRegionalFallback(rawUrl, scrapePreferences);
+      const regionalPage = await fetchHtmlWithRegionalFallback(rawUrl, scrapePreferences, result.currency);
       const regionalResult = detectTrackedItemFromHtml(regionalPage.url, regionalPage.html);
       if (regionalResult.currency === "NZD") {
         page = regionalPage;
@@ -1884,7 +1955,11 @@ export async function fetchTrackedItemCheck(
       )
     ) {
       try {
-        const regionalPage = await fetchHtmlWithRegionalFallback(item.url, scrapePreferences);
+        const regionalPage = await fetchHtmlWithRegionalFallback(
+          item.url,
+          scrapePreferences,
+          item.initialDetectedCurrency || item.currency
+        );
         const regional = extractTrackedItemCheckDataFromHtml(item, regionalPage.html);
         const regionalRawText = regional.rawText;
         const regionalPrice = regional.price;

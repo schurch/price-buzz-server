@@ -4,7 +4,12 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { detectTrackedItemFromHtml, extractTrackedItemCheckDataFromHtml, validateScrapeUrl } from "../src/scraper.ts";
+import {
+  detectTrackedItemFromHtml,
+  extractTrackedItemCheckDataFromHtml,
+  resolveRegionalFallbackRegion,
+  validateScrapeUrl
+} from "../src/scraper.ts";
 import type { TrackedItemRecord } from "../src/types.ts";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -49,7 +54,44 @@ test("Epic fixture resolves the current base-game NZD price", () => {
 
   assert.equal(result.previewPrice, "23.98");
   assert.equal(result.currency, "NZD");
+  assert.equal(result.detectionSource, "auto:captured-offer-price");
   assert.notEqual(result.previewPrice, "5.00");
+});
+
+test("Epic-style integer JSON prices are normalized using currency decimals", () => {
+  const html = `
+    <html>
+      <head><title>Alan Wake 2</title></head>
+      <body>
+        <script>
+          window.__PRICE__ = {
+            "price": {
+              "totalPrice": {
+                "discountPrice": 2094,
+                "originalPrice": 6998,
+                "currencyCode": "SGD",
+                "currencyInfo": { "decimals": 2 },
+                "fmtPrice": {
+                  "originalPrice": "S$69.98",
+                  "discountPrice": "S$20.94"
+                }
+              }
+            },
+            "offerType": "BASE_GAME"
+          };
+        </script>
+      </body>
+    </html>
+  `;
+
+  const result = detectTrackedItemFromHtml(
+    "https://store.epicgames.com/en-US/p/alan-wake-2",
+    html
+  );
+
+  assert.equal(result.previewPrice, "20.94");
+  assert.equal(result.currency, "SGD");
+  assert.equal(result.detectionSource, "auto:json-price-key");
 });
 
 test("Amazon fixture keeps AUD and does not misread UTF as a currency", () => {
@@ -216,19 +258,13 @@ test("auto-detected inline currency items re-detect instead of replaying stale H
   assert.equal(checked.currency, "NZD");
 });
 
-test("NZD tracked items keep NZ regional fallback eligibility even without saved scrape preferences", async () => {
-  const scraper = await import("../src/scraper.ts");
-  const source = readFileSync(path.join(__dirname, "../src/scraper.ts"), "utf8");
-
-  assert.match(
-    source,
-    /item\.initialDetectedCurrency\s*\|\|\s*item\.currency/
-  );
-  assert.match(
-    source,
-    /const expectsNz = \(expectedCurrency \?\? ""\)\.toUpperCase\(\) === "NZD"/
-  );
-  assert.equal(typeof scraper.fetchTrackedItemCheck, "function");
+test("NZD tracked items resolve NZ regional fallback even without saved scrape preferences", () => {
+  assert.equal(resolveRegionalFallbackRegion(null, "NZD"), "nz");
+  assert.equal(resolveRegionalFallbackRegion(
+    { acceptLanguage: null, browserLocale: null, browserTimezone: "Pacific/Auckland" },
+    null
+  ), "nz");
+  assert.equal(resolveRegionalFallbackRegion(null, "SGD"), null);
 });
 
 test("tracked items include item-level scrape preference persistence and lookup", () => {
