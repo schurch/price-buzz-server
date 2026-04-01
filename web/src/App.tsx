@@ -206,32 +206,6 @@ function LandingPage({ user }: { user: User | null }) {
             </article>
           </div>
         </section>
-
-        <section className="marketing-section">
-          <div className="section-copy narrow">
-            <h2>PriceBuzz is made to feel simple: fewer steps, clearer updates, and an easier way to stay on top of the things you want to buy.</h2>
-          </div>
-        </section>
-
-        <section className="marketing-section">
-          <div className="marketing-grid three">
-            <article className="marketing-card">
-              <h3>Simple setup</h3>
-              <p className="marketing-kicker">Add new products in seconds.</p>
-              <p>Add the product, check that it looks right, and you are done.</p>
-            </article>
-            <article className="marketing-card">
-              <h3>Clear history</h3>
-              <p className="marketing-kicker">See movement over time at a glance.</p>
-              <p>Each item keeps a simple price history so you can quickly see what is going on.</p>
-            </article>
-            <article className="marketing-card">
-              <h3>Notifications</h3>
-              <p className="marketing-kicker">Get notified when the price drops.</p>
-              <p>Get notified by email or Telegram when the price drops.</p>
-            </article>
-          </div>
-        </section>
       </main>
     </div>
   );
