@@ -397,6 +397,40 @@ export class AppDb {
     });
   }
 
+  updateUserByAdmin(input: {
+    userId: number;
+    firstName: string;
+    lastName: string;
+    email: string;
+    role: UserRole;
+    isActive: boolean;
+  }): boolean {
+    const result = this.db.prepare(`
+      UPDATE users
+      SET
+        first_name = @firstName,
+        last_name = @lastName,
+        email = @email,
+        role = @role,
+        is_active = @isActive
+      WHERE id = @userId
+    `).run({
+      userId: input.userId,
+      firstName: input.firstName.trim(),
+      lastName: input.lastName.trim(),
+      email: input.email.trim().toLowerCase(),
+      role: input.role,
+      isActive: input.isActive ? 1 : 0
+    });
+
+    return result.changes > 0;
+  }
+
+  deleteUserByAdmin(userId: number): boolean {
+    const result = this.db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+    return result.changes > 0;
+  }
+
   createTrackedItem(input: TrackedItemInput): number {
     const existing = this.db.prepare(`
       SELECT id
@@ -538,6 +572,36 @@ export class AppDb {
       WHERE id = ? AND owner_user_id = ? AND archived_at IS NULL
     `).run(utcNow(), utcNow(), trackedItemId, userId);
 
+    return result.changes > 0;
+  }
+
+  updateTrackedItemByAdmin(input: {
+    trackedItemId: number;
+    name: string;
+    url: string;
+    enabled: boolean;
+  }): boolean {
+    const result = this.db.prepare(`
+      UPDATE tracked_items
+      SET
+        name = @name,
+        url = @url,
+        enabled = @enabled,
+        updated_at = @updatedAt
+      WHERE id = @trackedItemId AND archived_at IS NULL
+    `).run({
+      trackedItemId: input.trackedItemId,
+      name: input.name.trim(),
+      url: input.url.trim(),
+      enabled: input.enabled ? 1 : 0,
+      updatedAt: utcNow()
+    });
+
+    return result.changes > 0;
+  }
+
+  deleteTrackedItemByAdmin(trackedItemId: number): boolean {
+    const result = this.db.prepare("DELETE FROM tracked_items WHERE id = ?").run(trackedItemId);
     return result.changes > 0;
   }
 

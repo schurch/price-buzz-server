@@ -75,9 +75,12 @@ export type TelegramLinkTokenRecord = {
 
 export type UserWithCounts = {
   id: number;
+  firstName: string;
+  lastName: string;
   email: string;
   role: "user" | "admin";
   isActive: boolean;
+  emailVerifiedAt: string | null;
   createdAt: string;
   trackedItemCount: number;
   channelCount: number;

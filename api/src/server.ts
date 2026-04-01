@@ -591,6 +591,140 @@ app.get("/api/admin", async (request, reply) => {
   reply.send(buildAdminPayload(user));
 });
 
+app.patch("/api/admin/users/:id", async (request, reply) => {
+  const user = requireAdmin(request, reply);
+  if (!user) {
+    return;
+  }
+
+  const userId = Number.parseInt((request.params as { id: string }).id, 10);
+  if (!Number.isFinite(userId)) {
+    reply.code(400).send({ error: "Invalid user." });
+    return;
+  }
+
+  const body = (request.body as Record<string, unknown> | undefined) ?? {};
+  const firstName = typeof body.firstName === "string" ? body.firstName.trim() : "";
+  const lastName = typeof body.lastName === "string" ? body.lastName.trim() : "";
+  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+  const role = body.role === "admin" ? "admin" : body.role === "user" ? "user" : null;
+  const isActive = body.isActive === true;
+
+  if (!firstName || !lastName || !email || !role) {
+    reply.code(400).send({ error: "Provide the user's name, email, and role." });
+    return;
+  }
+
+  if (userId === user.id && (!isActive || role !== "admin")) {
+    reply.code(400).send({ error: "You cannot disable or remove your own admin access." });
+    return;
+  }
+
+  try {
+    const updated = db.updateUserByAdmin({ userId, firstName, lastName, email, role, isActive });
+    if (!updated) {
+      reply.code(404).send({ error: "User not found." });
+      return;
+    }
+
+    reply.send({
+      notice: "User updated.",
+      admin: buildAdminPayload(user)
+    });
+  } catch (error) {
+    reply.code(400).send({
+      error: error instanceof Error ? error.message : "Failed to update user."
+    });
+  }
+});
+
+app.delete("/api/admin/users/:id", async (request, reply) => {
+  const user = requireAdmin(request, reply);
+  if (!user) {
+    return;
+  }
+
+  const userId = Number.parseInt((request.params as { id: string }).id, 10);
+  if (!Number.isFinite(userId)) {
+    reply.code(400).send({ error: "Invalid user." });
+    return;
+  }
+
+  if (userId === user.id) {
+    reply.code(400).send({ error: "You cannot delete your own account from admin." });
+    return;
+  }
+
+  const deleted = db.deleteUserByAdmin(userId);
+  if (!deleted) {
+    reply.code(404).send({ error: "User not found." });
+    return;
+  }
+
+  reply.send({
+    notice: "User deleted.",
+    admin: buildAdminPayload(user)
+  });
+});
+
+app.patch("/api/admin/items/:id", async (request, reply) => {
+  const user = requireAdmin(request, reply);
+  if (!user) {
+    return;
+  }
+
+  const trackedItemId = Number.parseInt((request.params as { id: string }).id, 10);
+  if (!Number.isFinite(trackedItemId)) {
+    reply.code(400).send({ error: "Invalid tracked item." });
+    return;
+  }
+
+  const body = (request.body as Record<string, unknown> | undefined) ?? {};
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  const url = typeof body.url === "string" ? body.url.trim() : "";
+  const enabled = body.enabled === true;
+
+  if (!name || !url) {
+    reply.code(400).send({ error: "Provide the tracked item name and URL." });
+    return;
+  }
+
+  const updated = db.updateTrackedItemByAdmin({ trackedItemId, name, url, enabled });
+  if (!updated) {
+    reply.code(404).send({ error: "Tracked item not found." });
+    return;
+  }
+
+  reply.send({
+    notice: "Tracked item updated.",
+    admin: buildAdminPayload(user)
+  });
+});
+
+app.delete("/api/admin/items/:id", async (request, reply) => {
+  const user = requireAdmin(request, reply);
+  if (!user) {
+    return;
+  }
+
+  const trackedItemId = Number.parseInt((request.params as { id: string }).id, 10);
+  if (!Number.isFinite(trackedItemId)) {
+    reply.code(400).send({ error: "Invalid tracked item." });
+    return;
+  }
+
+  const deleted = db.deleteTrackedItemByAdmin(trackedItemId);
+  if (!deleted) {
+    reply.code(404).send({ error: "Tracked item not found." });
+    return;
+  }
+
+  reply.send({
+    notice: "Tracked item deleted.",
+    admin: buildAdminPayload(user)
+  });
+});
+
 app.post("/api/admin/test/email", async (request, reply) => {
   const user = requireAdmin(request, reply);
   if (!user) {

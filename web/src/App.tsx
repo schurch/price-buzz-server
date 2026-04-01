@@ -4,6 +4,8 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate, useSearchParam
 import {
   createItem,
   createTelegramLink,
+  deleteAdminItem,
+  deleteAdminUser,
   deleteItem,
   detectItem,
   getAdmin,
@@ -17,7 +19,9 @@ import {
   scrapeDebug,
   sendAdminTestEmail,
   sendAdminTestTelegram,
-  signup
+  signup,
+  updateAdminItem,
+  updateAdminUser
 } from "./lib/api";
 import type {
   DetectionResult,
@@ -737,11 +741,19 @@ function AdminPage({ user }: { user: User }) {
       .finally(() => setBusy(false));
   }, []);
 
-  async function refreshAdmin() {
-    const payload = await getAdmin();
+  function applyAdminPayload(payload: {
+    users: UserWithCounts[];
+    items: PlatformTrackedItem[];
+    tracker: { running: boolean; lastRunAt: string | null };
+  }) {
     setUsers(payload.users);
     setItems(payload.items);
     setTrackerState(payload.tracker);
+  }
+
+  async function refreshAdmin() {
+    const payload = await getAdmin();
+    applyAdminPayload(payload);
   }
 
   async function handleEmail(event: FormEvent) {
@@ -785,14 +797,88 @@ function AdminPage({ user }: { user: User }) {
     try {
       const payload = await runChecks();
       setBanner({ notice: payload.notice, error: null });
-      await refreshAdmin();
+      applyAdminPayload(payload.admin);
     } catch (error) {
       setBanner({ notice: null, error: error instanceof Error ? error.message : "Failed to run checks." });
     }
   }
 
+  async function handleAdminUserSave(event: FormEvent<HTMLFormElement>, targetUserId: number) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+
+    try {
+      const payload = await updateAdminUser(targetUserId, {
+        firstName: String(form.get("firstName") ?? ""),
+        lastName: String(form.get("lastName") ?? ""),
+        email: String(form.get("email") ?? ""),
+        role: String(form.get("role")) === "admin" ? "admin" : "user",
+        isActive: form.get("isActive") === "on"
+      });
+      setBanner({ notice: payload.notice, error: null });
+      applyAdminPayload(payload.admin);
+    } catch (error) {
+      setBanner({ notice: null, error: error instanceof Error ? error.message : "Failed to update user." });
+    }
+  }
+
+  async function handleAdminUserDelete(targetUserId: number, email: string) {
+    if (!window.confirm(`Delete ${email} and all of their data?`)) {
+      return;
+    }
+
+    try {
+      const payload = await deleteAdminUser(targetUserId);
+      setBanner({ notice: payload.notice, error: null });
+      applyAdminPayload(payload.admin);
+    } catch (error) {
+      setBanner({ notice: null, error: error instanceof Error ? error.message : "Failed to delete user." });
+    }
+  }
+
+  async function handleAdminItemSave(event: FormEvent<HTMLFormElement>, trackedItemId: number) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+
+    try {
+      const payload = await updateAdminItem(trackedItemId, {
+        name: String(form.get("name") ?? ""),
+        url: String(form.get("url") ?? ""),
+        enabled: form.get("enabled") === "on"
+      });
+      setBanner({ notice: payload.notice, error: null });
+      applyAdminPayload(payload.admin);
+    } catch (error) {
+      setBanner({ notice: null, error: error instanceof Error ? error.message : "Failed to update tracked item." });
+    }
+  }
+
+  async function handleAdminItemDelete(trackedItemId: number, name: string) {
+    if (!window.confirm(`Delete tracked item "${name}"?`)) {
+      return;
+    }
+
+    try {
+      const payload = await deleteAdminItem(trackedItemId);
+      setBanner({ notice: payload.notice, error: null });
+      applyAdminPayload(payload.admin);
+    } catch (error) {
+      setBanner({ notice: null, error: error instanceof Error ? error.message : "Failed to delete tracked item." });
+    }
+  }
+
   if (busy) {
     return <AppShell user={user}><div className="screen-center">Loading admin…</div></AppShell>;
+  }
+
+  const itemsByUserId = new Map<number, PlatformTrackedItem[]>();
+  for (const item of items) {
+    const group = itemsByUserId.get(item.ownerUserId);
+    if (group) {
+      group.push(item);
+    } else {
+      itemsByUserId.set(item.ownerUserId, [item]);
+    }
   }
 
   return (
@@ -902,36 +988,112 @@ function AdminPage({ user }: { user: User }) {
 
       <section className="panel">
         <h2>Users</h2>
-        <table className="table">
-          <thead><tr><th>Email</th><th>Role</th><th>Tracked items</th><th>Channels</th></tr></thead>
-          <tbody>
-            {users.map((entry) => (
-              <tr key={entry.id}>
-                <td>{entry.email}</td>
-                <td>{entry.role}</td>
-                <td>{entry.trackedItemCount}</td>
-                <td>{entry.channelCount}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
+        <div className="item-groups">
+          {users.map((entry) => {
+            const ownedItems = itemsByUserId.get(entry.id) ?? [];
+            return (
+              <details key={entry.id} className="item-group">
+                <summary className="item-group-header">
+                  <h3>{entry.email}</h3>
+                  <span className="muted">
+                    {entry.role} · {entry.isActive ? "active" : "disabled"} · {ownedItems.length} item{ownedItems.length === 1 ? "" : "s"}
+                  </span>
+                </summary>
+                <div className="stack">
+                  <form className="stack" onSubmit={(event) => void handleAdminUserSave(event, entry.id)}>
+                    <div className="grid two">
+                      <label className="field">
+                        <span>First name</span>
+                        <input name="firstName" defaultValue={entry.firstName} />
+                      </label>
+                      <label className="field">
+                        <span>Last name</span>
+                        <input name="lastName" defaultValue={entry.lastName} />
+                      </label>
+                    </div>
+                    <div className="grid two">
+                      <label className="field">
+                        <span>Email</span>
+                        <input name="email" type="email" defaultValue={entry.email} />
+                      </label>
+                      <label className="field">
+                        <span>Role</span>
+                        <select name="role" defaultValue={entry.role}>
+                          <option value="user">user</option>
+                          <option value="admin">admin</option>
+                        </select>
+                      </label>
+                    </div>
+                    <div className="grid two">
+                      <label className="field checkbox-field">
+                        <span>
+                          <input name="isActive" type="checkbox" defaultChecked={entry.isActive} /> Active
+                        </span>
+                      </label>
+                      <div className="field">
+                        <span>Verified</span>
+                        <div className="field-display">{entry.emailVerifiedAt ? formatTimestamp(entry.emailVerifiedAt) : "No"}</div>
+                      </div>
+                    </div>
+                    <div className="hero-actions">
+                      <button className="button primary" type="submit">Save user</button>
+                      <button className="button danger" type="button" onClick={() => void handleAdminUserDelete(entry.id, entry.email)}>Delete user</button>
+                    </div>
+                  </form>
 
-      <section className="panel">
-        <h2>Tracked items</h2>
-        <table className="table">
-          <thead><tr><th>Name</th><th>Owner</th><th>Latest price</th><th>Status</th></tr></thead>
-          <tbody>
-            {items.map((entry) => (
-              <tr key={entry.id}>
-                <td>{entry.name}</td>
-                <td>{entry.ownerEmail}</td>
-                <td>{entry.latestPrice ?? "N/A"}</td>
-                <td>{entry.latestStatus ?? "Unknown"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                  <div className="history-block">
+                    <h4>User items</h4>
+                    {ownedItems.length === 0 ? (
+                      <p className="muted">No tracked items.</p>
+                    ) : (
+                      <div className="stack">
+                        {ownedItems.map((item) => (
+                          <form key={item.id} className="stack" onSubmit={(event) => void handleAdminItemSave(event, item.id)}>
+                            <div className="grid two">
+                              <label className="field">
+                                <span>Name</span>
+                                <input name="name" defaultValue={item.name} />
+                              </label>
+                              <label className="field">
+                                <span>URL</span>
+                                <input name="url" defaultValue={item.url} />
+                              </label>
+                            </div>
+                            <div className="grid two">
+                              <div className="field">
+                                <span>Latest price</span>
+                                <div className="field-display">{item.latestPrice ?? "N/A"}</div>
+                              </div>
+                              <div className="field">
+                                <span>Status</span>
+                                <div className="field-display">{item.latestStatus ?? "Unknown"}</div>
+                              </div>
+                            </div>
+                            <div className="grid two">
+                              <label className="field checkbox-field">
+                                <span>
+                                  <input name="enabled" type="checkbox" defaultChecked={item.enabled} /> Enabled
+                                </span>
+                              </label>
+                              <div className="field">
+                                <span>Last checked</span>
+                                <div className="field-display">{formatTimestamp(item.latestCheckedAt)}</div>
+                              </div>
+                            </div>
+                            <div className="hero-actions">
+                              <button className="button primary" type="submit">Save item</button>
+                              <button className="button danger" type="button" onClick={() => void handleAdminItemDelete(item.id, item.name)}>Delete item</button>
+                            </div>
+                          </form>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </details>
+            );
+          })}
+        </div>
       </section>
     </AppShell>
   );

@@ -174,6 +174,76 @@ export function getAdmin(): Promise<{
   return request("/admin");
 }
 
+export function updateAdminUser(
+  id: number,
+  input: {
+    firstName: string;
+    lastName: string;
+    email: string;
+    role: "user" | "admin";
+    isActive: boolean;
+  }
+): Promise<{
+  notice: string;
+  admin: {
+    user: User;
+    users: UserWithCounts[];
+    items: PlatformTrackedItem[];
+    tracker: TrackerStatus;
+  };
+}> {
+  return request(`/admin/users/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(input)
+  });
+}
+
+export function deleteAdminUser(id: number): Promise<{
+  notice: string;
+  admin: {
+    user: User;
+    users: UserWithCounts[];
+    items: PlatformTrackedItem[];
+    tracker: TrackerStatus;
+  };
+}> {
+  return request(`/admin/users/${id}`, { method: "DELETE" });
+}
+
+export function updateAdminItem(
+  id: number,
+  input: {
+    name: string;
+    url: string;
+    enabled: boolean;
+  }
+): Promise<{
+  notice: string;
+  admin: {
+    user: User;
+    users: UserWithCounts[];
+    items: PlatformTrackedItem[];
+    tracker: TrackerStatus;
+  };
+}> {
+  return request(`/admin/items/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(input)
+  });
+}
+
+export function deleteAdminItem(id: number): Promise<{
+  notice: string;
+  admin: {
+    user: User;
+    users: UserWithCounts[];
+    items: PlatformTrackedItem[];
+    tracker: TrackerStatus;
+  };
+}> {
+  return request(`/admin/items/${id}`, { method: "DELETE" });
+}
+
 export function sendAdminTestEmail(targets: string): Promise<{ notice: string }> {
   return request("/admin/test/email", {
     method: "POST",
