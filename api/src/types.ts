@@ -33,6 +33,9 @@ export type TrackedItemRecord = {
   name: string;
   pageTitle: string | null;
   url: string;
+  acceptLanguage: string | null;
+  browserLocale: string | null;
+  browserTimezone: string | null;
   selector: string | null;
   currency: string;
   attribute: string | null;
@@ -113,6 +116,9 @@ export type TrackedItemInput = {
   name: string;
   pageTitle?: string | null;
   url: string;
+  acceptLanguage?: string | null;
+  browserLocale?: string | null;
+  browserTimezone?: string | null;
   selector?: string | null;
   currency?: string;
   attribute?: string | null;

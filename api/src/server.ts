@@ -429,6 +429,7 @@ app.post("/api/items", async (request, reply) => {
   }
 
   const body = (request.body as Record<string, unknown> | undefined) ?? {};
+  const scrapePreferences = readScrapePreferences(request, body);
   const name = typeof body.name === "string" ? body.name.trim() : "";
   const url = typeof body.url === "string" ? body.url.trim() : "";
   const selector = typeof body.selector === "string" ? body.selector.trim() || null : null;
@@ -447,11 +448,15 @@ app.post("/api/items", async (request, reply) => {
     return;
   }
 
+  persistUserScrapePreferences(user.id, scrapePreferences);
   const trackedItemId = db.createTrackedItem({
     ownerUserId: user.id,
     name,
     pageTitle,
     url,
+    acceptLanguage: scrapePreferences.acceptLanguage,
+    browserLocale: scrapePreferences.browserLocale,
+    browserTimezone: scrapePreferences.browserTimezone,
     selector,
     currency,
     initialDetectedPrice,

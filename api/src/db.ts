@@ -60,6 +60,9 @@ export class AppDb {
         name TEXT NOT NULL,
         page_title TEXT,
         url TEXT NOT NULL,
+        accept_language TEXT,
+        browser_locale TEXT,
+        browser_timezone TEXT,
         selector TEXT,
         currency TEXT NOT NULL DEFAULT '',
         attribute TEXT,
@@ -167,6 +170,9 @@ export class AppDb {
     this.ensureColumn("users", "accept_language", "TEXT");
     this.ensureColumn("users", "browser_locale", "TEXT");
     this.ensureColumn("users", "browser_timezone", "TEXT");
+    this.ensureColumn("tracked_items", "accept_language", "TEXT");
+    this.ensureColumn("tracked_items", "browser_locale", "TEXT");
+    this.ensureColumn("tracked_items", "browser_timezone", "TEXT");
   }
 
   private ensureColumn(tableName: string, columnName: string, definition: string): void {
@@ -360,6 +366,9 @@ export class AppDb {
         SET
           name = @name,
           page_title = @pageTitle,
+          accept_language = @acceptLanguage,
+          browser_locale = @browserLocale,
+          browser_timezone = @browserTimezone,
           selector = @selector,
           currency = @currency,
           attribute = @attribute,
@@ -379,6 +388,9 @@ export class AppDb {
         id: existing.id,
         name: input.name.trim(),
         pageTitle: input.pageTitle?.trim() || null,
+        acceptLanguage: input.acceptLanguage?.trim() || null,
+        browserLocale: input.browserLocale?.trim() || null,
+        browserTimezone: input.browserTimezone?.trim() || null,
         selector: input.selector?.trim() || null,
         currency: input.currency?.trim() ?? "",
         attribute: input.attribute?.trim() || null,
@@ -406,11 +418,13 @@ export class AppDb {
 
     const result = this.db.prepare(`
       INSERT INTO tracked_items (
-        owner_user_id, name, page_title, url, selector, currency, attribute, regex, html_regex,
+        owner_user_id, name, page_title, url, accept_language, browser_locale, browser_timezone,
+        selector, currency, attribute, regex, html_regex,
         headers_json, detection_source, initial_detected_price, initial_detected_currency, initial_detected_raw_text,
         first_detected_at, enabled, archived_at, created_at, updated_at
       ) VALUES (
-        @ownerUserId, @name, @pageTitle, @url, @selector, @currency, @attribute, @regex, @htmlRegex,
+        @ownerUserId, @name, @pageTitle, @url, @acceptLanguage, @browserLocale, @browserTimezone,
+        @selector, @currency, @attribute, @regex, @htmlRegex,
         @headersJson, @detectionSource, @initialDetectedPrice, @initialDetectedCurrency, @initialDetectedRawText,
         @firstDetectedAt, @enabled, @archivedAt, @createdAt, @updatedAt
       )
@@ -419,6 +433,9 @@ export class AppDb {
       name: input.name.trim(),
       pageTitle: input.pageTitle?.trim() || null,
       url: input.url.trim(),
+      acceptLanguage: input.acceptLanguage?.trim() || null,
+      browserLocale: input.browserLocale?.trim() || null,
+      browserTimezone: input.browserTimezone?.trim() || null,
       selector: input.selector?.trim() || null,
       currency: input.currency?.trim() ?? "",
       attribute: input.attribute?.trim() || null,
@@ -498,6 +515,9 @@ export class AppDb {
         name,
         page_title AS pageTitle,
         url,
+        accept_language AS acceptLanguage,
+        browser_locale AS browserLocale,
+        browser_timezone AS browserTimezone,
         selector,
         currency,
         attribute,
@@ -532,6 +552,9 @@ export class AppDb {
         name,
         page_title AS pageTitle,
         url,
+        accept_language AS acceptLanguage,
+        browser_locale AS browserLocale,
+        browser_timezone AS browserTimezone,
         selector,
         currency,
         attribute,

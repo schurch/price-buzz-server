@@ -279,6 +279,31 @@ function extractPriceText(item: TrackedItemRecord, html: string): string {
   return node.text().trim();
 }
 
+export function extractTrackedItemCheckDataFromHtml(
+  item: TrackedItemRecord,
+  html: string
+): {
+  rawText: string;
+  price: string;
+  currency: string | null;
+} {
+  if (item.detectionSource?.startsWith("auto:")) {
+    const detection = detectTrackedItemFromHtml(item.url, html);
+    return {
+      rawText: detection.previewRawText,
+      price: detection.previewPrice,
+      currency: detection.currency || item.currency || null
+    };
+  }
+
+  const rawText = extractPriceText(item, html);
+  return {
+    rawText,
+    price: normalizePrice(rawText, item.regex),
+    currency: inferCurrencyFromText(rawText) || item.currency || null
+  };
+}
+
 function buildScrapeHeaders(
   headers: Record<string, string>,
   scrapePreferences: ScrapePreferences | null
@@ -393,6 +418,13 @@ function shouldUseBrowserFallbackForHtml(rawUrl: string, html: string, finalUrl:
 }
 
 function shouldUseBrowserFallback(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  if (
+    /fetch failed|http\/2|http2|protocol error|internal_error|socket hang up|econnreset|ec on? reset|terminated|other side closed|connection closed|reset/i.test(message)
+  ) {
+    return true;
+  }
+
   if (!(error instanceof HttpStatusError)) {
     return false;
   }
@@ -456,9 +488,13 @@ function shouldPreferNzRegionalFallback(
 
 function shouldRetryTrackedItemCheckWithRegional(
   scrapePreferences: ScrapePreferences | null,
+  expectedCurrency: string | null | undefined,
   currency: string | null | undefined
 ): boolean {
-  if (inferPreferredRegion(scrapePreferences) !== "nz") {
+  const prefersNz = inferPreferredRegion(scrapePreferences) === "nz";
+  const expectsNz = (expectedCurrency ?? "").toUpperCase() === "NZD";
+
+  if (!prefersNz && !expectsNz) {
     return false;
   }
 
@@ -1679,19 +1715,22 @@ export async function fetchTrackedItemCheck(
 }> {
   try {
     let page = await fetchHtmlWithPreferences(item.url, item.headersJson, scrapePreferences);
-    let rawText = extractPriceText(item, page.html);
-    let price = normalizePrice(rawText, item.regex);
-    let currency = inferCurrencyFromText(rawText) || item.currency || null;
+    let { rawText, price, currency } = extractTrackedItemCheckDataFromHtml(item, page.html);
 
     if (
       (page.fetchMode === "http" || page.fetchMode === "browser")
-      && shouldRetryTrackedItemCheckWithRegional(scrapePreferences, currency)
+      && shouldRetryTrackedItemCheckWithRegional(
+        scrapePreferences,
+        item.initialDetectedCurrency || item.currency,
+        currency
+      )
     ) {
       try {
         const regionalPage = await fetchHtmlWithRegionalFallback(item.url, scrapePreferences);
-        const regionalRawText = extractPriceText(item, regionalPage.html);
-        const regionalPrice = normalizePrice(regionalRawText, item.regex);
-        const regionalCurrency = inferCurrencyFromText(regionalRawText) || item.currency || null;
+        const regional = extractTrackedItemCheckDataFromHtml(item, regionalPage.html);
+        const regionalRawText = regional.rawText;
+        const regionalPrice = regional.price;
+        const regionalCurrency = regional.currency;
 
         if (
           regionalCurrency === "NZD"

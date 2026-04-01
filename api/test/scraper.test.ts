@@ -4,7 +4,8 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { detectTrackedItemFromHtml } from "../src/scraper.ts";
+import { detectTrackedItemFromHtml, extractTrackedItemCheckDataFromHtml } from "../src/scraper.ts";
+import type { TrackedItemRecord } from "../src/types.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -112,4 +113,147 @@ test("Woolworths fixture resolves the NZD product price", () => {
 
   assert.equal(result.previewPrice, "6.39");
   assert.equal(result.currency, "NZD");
+});
+
+test("JSON-LD tracked items do not fall back to Shopify variant cents prices", () => {
+  const html = `
+    <html>
+      <head>
+        <meta property="og:price:amount" content="169.00">
+        <meta property="og:price:currency" content="NZD">
+        <script>
+          var meta = {"product":{"variants":[{"id":51615992021364,"price":16900}]}}
+        </script>
+        <script type="application/ld+json">
+          {
+            "@context": "https://schema.org",
+            "@type": "Product",
+            "name": "Keychron V1 Knob 75% RGB Carbon Black Mechanical Keyboard - K Pro Red Switch",
+            "offers": {
+              "@type": "Offer",
+              "price": 169.0,
+              "priceCurrency": "NZD"
+            }
+          }
+        </script>
+      </head>
+      <body>
+        <div class="price"><strong class="price__current">$169.00</strong></div>
+      </body>
+    </html>
+  `;
+
+  const detected = detectTrackedItemFromHtml(
+    "https://computerlounge.co.nz/products/keychron-v1-rgb-75-tkl-wired-mechanical-keyboard-carbon-black-red-switch",
+    html
+  );
+  assert.equal(detected.detectionSource, "auto:json-ld-price");
+  assert.equal(detected.previewPrice, "169.00");
+
+  const trackedItem: TrackedItemRecord = {
+    id: 1,
+    ownerUserId: 1,
+    name: detected.name,
+    pageTitle: detected.pageTitle,
+    url: detected.url,
+    acceptLanguage: null,
+    browserLocale: null,
+    browserTimezone: null,
+    selector: detected.selector,
+    currency: detected.currency,
+    attribute: detected.attribute,
+    regex: detected.regex,
+    htmlRegex: detected.htmlRegex,
+    headersJson: null,
+    detectionSource: detected.detectionSource,
+    initialDetectedPrice: detected.previewPrice,
+    initialDetectedCurrency: detected.currency,
+    initialDetectedRawText: detected.previewRawText,
+    firstDetectedAt: null,
+    enabled: true,
+    archivedAt: null,
+    createdAt: "",
+    updatedAt: ""
+  };
+
+  const checked = extractTrackedItemCheckDataFromHtml(trackedItem, html);
+  assert.equal(checked.rawText, "169");
+  assert.equal(checked.price, "169.00");
+  assert.equal(checked.currency, "NZD");
+});
+
+test("auto-detected inline currency items re-detect instead of replaying stale HTML regexes", () => {
+  const html = loadFixture("yesstyle-1134237520.html");
+  const detected = detectTrackedItemFromHtml(
+    "https://www.yesstyle.com/en/tcuc.NZD/coc.NZ/info.html/pid.1134237520?googtrans=en",
+    html
+  );
+
+  assert.equal(detected.detectionSource, "auto:inline-currency-price");
+  assert.equal(detected.previewPrice, "11.56");
+
+  const trackedItem: TrackedItemRecord = {
+    id: 1,
+    ownerUserId: 1,
+    name: detected.name,
+    pageTitle: detected.pageTitle,
+    url: detected.url,
+    acceptLanguage: null,
+    browserLocale: null,
+    browserTimezone: null,
+    selector: detected.selector,
+    currency: detected.currency,
+    attribute: detected.attribute,
+    regex: detected.regex,
+    htmlRegex: detected.htmlRegex,
+    headersJson: null,
+    detectionSource: detected.detectionSource,
+    initialDetectedPrice: detected.previewPrice,
+    initialDetectedCurrency: detected.currency,
+    initialDetectedRawText: detected.previewRawText,
+    firstDetectedAt: null,
+    enabled: true,
+    archivedAt: null,
+    createdAt: "",
+    updatedAt: ""
+  };
+
+  const checked = extractTrackedItemCheckDataFromHtml(trackedItem, html);
+  assert.equal(checked.rawText, "NZ$ 11.56");
+  assert.equal(checked.price, "11.56");
+  assert.equal(checked.currency, "NZD");
+});
+
+test("NZD tracked items keep NZ regional fallback eligibility even without saved scrape preferences", async () => {
+  const scraper = await import("../src/scraper.ts");
+  const source = readFileSync(path.join(__dirname, "../src/scraper.ts"), "utf8");
+
+  assert.match(
+    source,
+    /item\.initialDetectedCurrency\s*\|\|\s*item\.currency/
+  );
+  assert.match(
+    source,
+    /const expectsNz = \(expectedCurrency \?\? ""\)\.toUpperCase\(\) === "NZD"/
+  );
+  assert.equal(typeof scraper.fetchTrackedItemCheck, "function");
+});
+
+test("tracked items include item-level scrape preference persistence and lookup", () => {
+  const dbSource = readFileSync(path.join(__dirname, "../src/db.ts"), "utf8");
+  const serverSource = readFileSync(path.join(__dirname, "../src/server.ts"), "utf8");
+  const trackerSource = readFileSync(path.join(__dirname, "../src/tracker.ts"), "utf8");
+
+  assert.match(dbSource, /accept_language TEXT/);
+  assert.match(dbSource, /browser_locale TEXT/);
+  assert.match(dbSource, /browser_timezone TEXT/);
+  assert.match(dbSource, /accept_language = @acceptLanguage/);
+  assert.match(dbSource, /browser_locale = @browserLocale/);
+  assert.match(dbSource, /browser_timezone = @browserTimezone/);
+  assert.match(serverSource, /acceptLanguage: scrapePreferences\.acceptLanguage/);
+  assert.match(serverSource, /browserLocale: scrapePreferences\.browserLocale/);
+  assert.match(serverSource, /browserTimezone: scrapePreferences\.browserTimezone/);
+  assert.match(trackerSource, /acceptLanguage: item\.acceptLanguage \?\? owner\?\.acceptLanguage \?\? null/);
+  assert.match(trackerSource, /browserLocale: item\.browserLocale \?\? owner\?\.browserLocale \?\? null/);
+  assert.match(trackerSource, /browserTimezone: item\.browserTimezone \?\? owner\?\.browserTimezone \?\? null/);
 });
