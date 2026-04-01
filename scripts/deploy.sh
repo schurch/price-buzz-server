@@ -8,5 +8,6 @@ fi
 
 mkdir -p ./data
 IMAGE_NAME="$IMAGE_NAME" docker compose pull
-IMAGE_NAME="$IMAGE_NAME" docker compose up -d
-docker image prune -f
+IMAGE_NAME="$IMAGE_NAME" docker compose up -d --remove-orphans
+# Remove superseded tagged images after the new container is running.
+docker image prune -af
