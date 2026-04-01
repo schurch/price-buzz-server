@@ -63,11 +63,7 @@ export class AppDb {
         accept_language TEXT,
         browser_locale TEXT,
         browser_timezone TEXT,
-        selector TEXT,
         currency TEXT NOT NULL DEFAULT '',
-        attribute TEXT,
-        regex TEXT,
-        html_regex TEXT,
         headers_json TEXT,
         detection_source TEXT,
         initial_detected_price TEXT,
@@ -173,6 +169,7 @@ export class AppDb {
     this.ensureColumn("tracked_items", "accept_language", "TEXT");
     this.ensureColumn("tracked_items", "browser_locale", "TEXT");
     this.ensureColumn("tracked_items", "browser_timezone", "TEXT");
+    this.dropLegacyTrackedItemExtractionColumns();
   }
 
   private ensureColumn(tableName: string, columnName: string, definition: string): void {
@@ -182,6 +179,57 @@ export class AppDb {
     }
 
     this.db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+  }
+
+  private dropLegacyTrackedItemExtractionColumns(): void {
+    const columns = this.db.prepare("PRAGMA table_info(tracked_items)").all() as Array<{ name: string }>;
+    const legacyColumns = ["selector", "attribute", "regex", "html_regex"];
+    if (!legacyColumns.some((columnName) => columns.some((column) => column.name === columnName))) {
+      return;
+    }
+
+    this.db.exec(`
+      BEGIN;
+      PRAGMA foreign_keys=OFF;
+      ALTER TABLE tracked_items RENAME TO tracked_items_legacy;
+      CREATE TABLE tracked_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_user_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        page_title TEXT,
+        url TEXT NOT NULL,
+        accept_language TEXT,
+        browser_locale TEXT,
+        browser_timezone TEXT,
+        currency TEXT NOT NULL DEFAULT '',
+        headers_json TEXT,
+        detection_source TEXT,
+        initial_detected_price TEXT,
+        initial_detected_currency TEXT,
+        initial_detected_raw_text TEXT,
+        first_detected_at TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        archived_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (owner_user_id) REFERENCES users (id) ON DELETE CASCADE
+      );
+      INSERT INTO tracked_items (
+        id, owner_user_id, name, page_title, url, accept_language, browser_locale, browser_timezone,
+        currency, headers_json, detection_source, initial_detected_price, initial_detected_currency,
+        initial_detected_raw_text, first_detected_at, enabled, archived_at, created_at, updated_at
+      )
+      SELECT
+        id, owner_user_id, name, page_title, url, accept_language, browser_locale, browser_timezone,
+        currency, headers_json, detection_source, initial_detected_price, initial_detected_currency,
+        initial_detected_raw_text, first_detected_at, enabled, archived_at, created_at, updated_at
+      FROM tracked_items_legacy;
+      DROP TABLE tracked_items_legacy;
+      CREATE INDEX IF NOT EXISTS idx_tracked_items_owner_user_id
+      ON tracked_items (owner_user_id);
+      PRAGMA foreign_keys=ON;
+      COMMIT;
+    `);
   }
 
   countUsers(): number {
@@ -369,11 +417,7 @@ export class AppDb {
           accept_language = @acceptLanguage,
           browser_locale = @browserLocale,
           browser_timezone = @browserTimezone,
-          selector = @selector,
           currency = @currency,
-          attribute = @attribute,
-          regex = @regex,
-          html_regex = @htmlRegex,
           headers_json = @headersJson,
           detection_source = @detectionSource,
           initial_detected_price = COALESCE(initial_detected_price, @initialDetectedPrice),
@@ -391,11 +435,7 @@ export class AppDb {
         acceptLanguage: input.acceptLanguage?.trim() || null,
         browserLocale: input.browserLocale?.trim() || null,
         browserTimezone: input.browserTimezone?.trim() || null,
-        selector: input.selector?.trim() || null,
         currency: input.currency?.trim() ?? "",
-        attribute: input.attribute?.trim() || null,
-        regex: input.regex?.trim() || null,
-        htmlRegex: input.htmlRegex?.trim() || null,
         headersJson: input.headers ? JSON.stringify(input.headers) : null,
         detectionSource: input.detectionSource?.trim() || null,
         initialDetectedPrice: input.initialDetectedPrice?.trim() || null,
@@ -419,13 +459,11 @@ export class AppDb {
     const result = this.db.prepare(`
       INSERT INTO tracked_items (
         owner_user_id, name, page_title, url, accept_language, browser_locale, browser_timezone,
-        selector, currency, attribute, regex, html_regex,
-        headers_json, detection_source, initial_detected_price, initial_detected_currency, initial_detected_raw_text,
+        currency, headers_json, detection_source, initial_detected_price, initial_detected_currency, initial_detected_raw_text,
         first_detected_at, enabled, archived_at, created_at, updated_at
       ) VALUES (
         @ownerUserId, @name, @pageTitle, @url, @acceptLanguage, @browserLocale, @browserTimezone,
-        @selector, @currency, @attribute, @regex, @htmlRegex,
-        @headersJson, @detectionSource, @initialDetectedPrice, @initialDetectedCurrency, @initialDetectedRawText,
+        @currency, @headersJson, @detectionSource, @initialDetectedPrice, @initialDetectedCurrency, @initialDetectedRawText,
         @firstDetectedAt, @enabled, @archivedAt, @createdAt, @updatedAt
       )
     `).run({
@@ -436,11 +474,7 @@ export class AppDb {
       acceptLanguage: input.acceptLanguage?.trim() || null,
       browserLocale: input.browserLocale?.trim() || null,
       browserTimezone: input.browserTimezone?.trim() || null,
-      selector: input.selector?.trim() || null,
       currency: input.currency?.trim() ?? "",
-      attribute: input.attribute?.trim() || null,
-      regex: input.regex?.trim() || null,
-      htmlRegex: input.htmlRegex?.trim() || null,
       headersJson: input.headers ? JSON.stringify(input.headers) : null,
       detectionSource: input.detectionSource?.trim() || null,
       initialDetectedPrice: input.initialDetectedPrice?.trim() || null,
@@ -518,11 +552,7 @@ export class AppDb {
         accept_language AS acceptLanguage,
         browser_locale AS browserLocale,
         browser_timezone AS browserTimezone,
-        selector,
         currency,
-        attribute,
-        regex,
-        html_regex AS htmlRegex,
         headers_json AS headersJson,
         detection_source AS detectionSource,
         initial_detected_price AS initialDetectedPrice,
@@ -555,11 +585,7 @@ export class AppDb {
         accept_language AS acceptLanguage,
         browser_locale AS browserLocale,
         browser_timezone AS browserTimezone,
-        selector,
         currency,
-        attribute,
-        regex,
-        html_regex AS htmlRegex,
         headers_json AS headersJson,
         detection_source AS detectionSource,
         initial_detected_price AS initialDetectedPrice,

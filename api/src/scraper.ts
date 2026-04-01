@@ -249,36 +249,6 @@ function readCandidateRawText(node: cheerio.Cheerio<any>): {
   };
 }
 
-function extractPriceText(item: TrackedItemRecord, html: string): string {
-  if (item.htmlRegex) {
-    const match = new RegExp(item.htmlRegex).exec(html);
-    if (!match) {
-      throw new Error(`HTML regex did not match page: ${item.htmlRegex}`);
-    }
-    return (match[1] ?? match[0]).trim();
-  }
-
-  if (!item.selector) {
-    throw new Error("Either selector or htmlRegex is required");
-  }
-
-  const $ = cheerio.load(html);
-  const node = $(item.selector).first();
-  if (node.length === 0) {
-    throw new Error(`CSS selector did not match any node: ${item.selector}`);
-  }
-
-  if (item.attribute) {
-    const value = node.attr(item.attribute);
-    if (!value) {
-      throw new Error(`Attribute '${item.attribute}' was not present on the matched element`);
-    }
-    return value.trim();
-  }
-
-  return node.text().trim();
-}
-
 export function extractTrackedItemCheckDataFromHtml(
   item: TrackedItemRecord,
   html: string
@@ -1075,10 +1045,6 @@ function buildDetectionResult(input: {
   url: string;
   name: string;
   pageTitle: string | null;
-  selector?: string | null;
-  attribute?: string | null;
-  regex?: string | null;
-  htmlRegex?: string | null;
   currency?: string;
   detectionSource: string;
   previewRawText: string;
@@ -1088,11 +1054,7 @@ function buildDetectionResult(input: {
     name: input.name,
     pageTitle: input.pageTitle,
     url: input.url,
-    selector: input.selector ?? null,
     currency: input.currency ?? "",
-    attribute: input.attribute ?? null,
-    regex: input.regex ?? null,
-    htmlRegex: input.htmlRegex ?? null,
     detectionSource: input.detectionSource,
     previewRawText: input.previewRawText,
     previewPrice: input.previewPrice
@@ -1628,7 +1590,6 @@ export function detectTrackedItemFromHtml(finalUrl: string, html: string): Detec
     name,
     pageTitle,
     currency: capturedOfferPrice.currency || pageCurrency,
-    htmlRegex: "\"catalogOffer\"",
     detectionSource: "auto:captured-offer-price",
     previewRawText: capturedOfferPrice.previewRawText,
     previewPrice: capturedOfferPrice.previewPrice
@@ -1637,10 +1598,6 @@ export function detectTrackedItemFromHtml(finalUrl: string, html: string): Detec
     url: finalUrl,
     name,
     pageTitle,
-    selector: genericCandidate.selector ?? null,
-    attribute: genericCandidate.attribute ?? null,
-    regex: genericCandidate.regex ?? null,
-    htmlRegex: genericCandidate.htmlRegex ?? null,
     currency: genericCandidate.currency || pageCurrency,
     detectionSource: genericCandidate.detectionSource,
     previewRawText: genericCandidate.previewRawText,
@@ -1651,7 +1608,6 @@ export function detectTrackedItemFromHtml(finalUrl: string, html: string): Detec
       name,
       pageTitle,
       currency: jsonLdPrice.currency || pageCurrency,
-      htmlRegex: "\"price\"\\s*:\\s*\"?([0-9]+(?:\\.[0-9]+)?)\"?",
       detectionSource: "auto:json-ld-price",
       previewRawText: jsonLdPrice.previewRawText,
       previewPrice: jsonLdPrice.previewPrice
