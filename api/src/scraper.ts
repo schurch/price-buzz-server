@@ -1736,6 +1736,14 @@ async function fetchHtmlWithRegionalFallback(
     throw new Error("No regional fallback configured for this request");
   }
 
+  const hostname = new URL(rawUrl).hostname.trim().toLowerCase();
+  const shouldUseBrowserOnly =
+    hostname === "store.epicgames.com" || hostname.endsWith(".store.epicgames.com");
+
+  if (shouldUseBrowserOnly) {
+    return fetchHtmlViaRegionalProxy(rawUrl, preferredRegion, "browser");
+  }
+
   try {
     return await fetchHtmlViaRegionalProxy(rawUrl, preferredRegion, "http");
   } catch {
