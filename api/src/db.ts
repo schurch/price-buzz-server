@@ -170,6 +170,7 @@ export class AppDb {
     this.ensureColumn("tracked_items", "browser_locale", "TEXT");
     this.ensureColumn("tracked_items", "browser_timezone", "TEXT");
     this.dropLegacyTrackedItemExtractionColumns();
+    this.repairTrackedItemForeignKeys();
   }
 
   private ensureColumn(tableName: string, columnName: string, definition: string): void {
@@ -191,8 +192,7 @@ export class AppDb {
     this.db.exec(`
       BEGIN;
       PRAGMA foreign_keys=OFF;
-      ALTER TABLE tracked_items RENAME TO tracked_items_legacy;
-      CREATE TABLE tracked_items (
+      CREATE TABLE tracked_items_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         owner_user_id INTEGER NOT NULL,
         name TEXT NOT NULL,
@@ -214,7 +214,7 @@ export class AppDb {
         updated_at TEXT NOT NULL,
         FOREIGN KEY (owner_user_id) REFERENCES users (id) ON DELETE CASCADE
       );
-      INSERT INTO tracked_items (
+      INSERT INTO tracked_items_new (
         id, owner_user_id, name, page_title, url, accept_language, browser_locale, browser_timezone,
         currency, headers_json, detection_source, initial_detected_price, initial_detected_currency,
         initial_detected_raw_text, first_detected_at, enabled, archived_at, created_at, updated_at
@@ -223,10 +223,67 @@ export class AppDb {
         id, owner_user_id, name, page_title, url, accept_language, browser_locale, browser_timezone,
         currency, headers_json, detection_source, initial_detected_price, initial_detected_currency,
         initial_detected_raw_text, first_detected_at, enabled, archived_at, created_at, updated_at
-      FROM tracked_items_legacy;
-      DROP TABLE tracked_items_legacy;
+      FROM tracked_items;
+      DROP TABLE tracked_items;
+      ALTER TABLE tracked_items_new RENAME TO tracked_items;
       CREATE INDEX IF NOT EXISTS idx_tracked_items_owner_user_id
       ON tracked_items (owner_user_id);
+      PRAGMA foreign_keys=ON;
+      COMMIT;
+    `);
+  }
+
+  private repairTrackedItemForeignKeys(): void {
+    const trackedItemTables = ["price_checks", "alert_deliveries"];
+    const needsRepair = trackedItemTables.some((tableName) => {
+      const foreignKeys = this.db.prepare(`PRAGMA foreign_key_list(${tableName})`).all() as Array<{ table: string }>;
+      return foreignKeys.some((foreignKey) => foreignKey.table === "tracked_items_legacy");
+    });
+
+    if (!needsRepair) {
+      return;
+    }
+
+    this.db.exec(`
+      BEGIN;
+      PRAGMA foreign_keys=OFF;
+
+      ALTER TABLE price_checks RENAME TO price_checks_legacy_fk_fix;
+      CREATE TABLE price_checks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tracked_item_id INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        checked_at TEXT NOT NULL,
+        price TEXT,
+        currency TEXT,
+        raw_text TEXT,
+        error_message TEXT,
+        FOREIGN KEY (tracked_item_id) REFERENCES tracked_items (id) ON DELETE CASCADE
+      );
+      INSERT INTO price_checks (id, tracked_item_id, status, checked_at, price, currency, raw_text, error_message)
+      SELECT id, tracked_item_id, status, checked_at, price, currency, raw_text, error_message
+      FROM price_checks_legacy_fk_fix;
+      DROP TABLE price_checks_legacy_fk_fix;
+      CREATE INDEX IF NOT EXISTS idx_price_checks_tracked_item_checked_at
+      ON price_checks (tracked_item_id, checked_at DESC);
+
+      ALTER TABLE alert_deliveries RENAME TO alert_deliveries_legacy_fk_fix;
+      CREATE TABLE alert_deliveries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tracked_item_id INTEGER NOT NULL,
+        channel_id INTEGER NOT NULL,
+        event_type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        detail TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (tracked_item_id) REFERENCES tracked_items (id) ON DELETE CASCADE,
+        FOREIGN KEY (channel_id) REFERENCES notification_channels (id) ON DELETE CASCADE
+      );
+      INSERT INTO alert_deliveries (id, tracked_item_id, channel_id, event_type, status, detail, created_at)
+      SELECT id, tracked_item_id, channel_id, event_type, status, detail, created_at
+      FROM alert_deliveries_legacy_fk_fix;
+      DROP TABLE alert_deliveries_legacy_fk_fix;
+
       PRAGMA foreign_keys=ON;
       COMMIT;
     `);
