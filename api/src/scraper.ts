@@ -519,11 +519,7 @@ function shouldPreferNzRegionalFallback(
   scrapePreferences: ScrapePreferences | null,
   detection: DetectionResult
 ): boolean {
-  if (resolveRegionalFallbackRegion(scrapePreferences, detection.currency) !== "nz") {
-    return false;
-  }
-
-  return !detection.currency || detection.currency !== "NZD";
+  return shouldRetryWithNzRegionalFallback(scrapePreferences, detection.currency, detection.currency);
 }
 
 export function resolveRegionalFallbackRegion(
@@ -545,12 +541,20 @@ function shouldRetryTrackedItemCheckWithRegional(
   expectedCurrency: string | null | undefined,
   currency: string | null | undefined
 ): boolean {
+  return shouldRetryWithNzRegionalFallback(scrapePreferences, expectedCurrency, currency);
+}
+
+export function shouldRetryWithNzRegionalFallback(
+  scrapePreferences: ScrapePreferences | null,
+  expectedCurrency: string | null | undefined,
+  localCurrency: string | null | undefined
+): boolean {
   const region = resolveRegionalFallbackRegion(scrapePreferences, expectedCurrency);
   if (region !== "nz") {
     return false;
   }
 
-  return !currency || currency !== "NZD";
+  return !localCurrency || localCurrency !== "NZD";
 }
 
 function isBrowserChallengePage(html: string, pageUrl: string, title: string): boolean {

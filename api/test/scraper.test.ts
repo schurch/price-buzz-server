@@ -8,6 +8,7 @@ import {
   detectTrackedItemFromHtml,
   extractTrackedItemCheckDataFromHtml,
   resolveRegionalFallbackRegion,
+  shouldRetryWithNzRegionalFallback,
   validateScrapeUrl
 } from "../src/scraper.ts";
 import type { TrackedItemRecord } from "../src/types.ts";
@@ -265,6 +266,29 @@ test("NZD tracked items resolve NZ regional fallback even without saved scrape p
     null
   ), "nz");
   assert.equal(resolveRegionalFallbackRegion(null, "SGD"), null);
+});
+
+test("NZ users retry through NZ regional fallback when local currency is not NZD", () => {
+  assert.equal(
+    shouldRetryWithNzRegionalFallback(
+      { acceptLanguage: "en-NZ,en;q=0.9", browserLocale: "en-NZ", browserTimezone: "Pacific/Auckland" },
+      null,
+      "SGD"
+    ),
+    true
+  );
+  assert.equal(
+    shouldRetryWithNzRegionalFallback(
+      { acceptLanguage: "en-NZ,en;q=0.9", browserLocale: "en-NZ", browserTimezone: "Pacific/Auckland" },
+      null,
+      "NZD"
+    ),
+    false
+  );
+  assert.equal(
+    shouldRetryWithNzRegionalFallback(null, "NZD", "SGD"),
+    true
+  );
 });
 
 test("tracked items include item-level scrape preference persistence and lookup", () => {
