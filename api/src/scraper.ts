@@ -1445,33 +1445,10 @@ function detectJsonLdPrice(html: string): { previewRawText: string; previewPrice
   } : null;
 }
 
-function normalizeFarmersVariant(variant: string): string {
-  const parts = variant
-    .split(",")
-    .map((part) => part.trim())
-    .map((part) => part.replace(/^[A-Za-z-]+:\s*/i, "").trim())
-    .filter(Boolean);
-
-  return parts.join(" / ");
-}
-
 function detectSpecificProductName(finalUrl: string, html: string, $: cheerio.CheerioAPI, fallbackName: string): string {
-  const canonicalName = $("meta[property='og:title']").attr("content")?.trim()
+  return $("meta[property='og:title']").attr("content")?.trim()
     || $("h1").first().text().trim()
     || fallbackName;
-
-  if (!/farmers\.co\.nz/i.test(finalUrl)) {
-    return canonicalName;
-  }
-
-  const variantMatch = /"variant"\s*:\s*"([^"]+)"/i.exec(html);
-  const normalizedVariant = variantMatch?.[1] ? normalizeFarmersVariant(variantMatch[1]) : "";
-  if (!normalizedVariant) {
-    return canonicalName;
-  }
-
-  const trimmedName = canonicalName.replace(/\s+Range$/i, "").trim();
-  return `${trimmedName} - ${normalizedVariant}`;
 }
 
 function findCapturedCatalogOffers(node: unknown, results: Record<string, unknown>[] = []): Record<string, unknown>[] {
@@ -1736,16 +1713,30 @@ async function fetchHtmlWithRegionalFallback(
     throw new Error("No regional fallback configured for this request");
   }
 
-  const hostname = new URL(rawUrl).hostname.trim().toLowerCase();
-  const shouldUseBrowserOnly =
-    hostname === "store.epicgames.com" || hostname.endsWith(".store.epicgames.com");
-
-  if (shouldUseBrowserOnly) {
-    return fetchHtmlViaRegionalProxy(rawUrl, preferredRegion, "browser");
-  }
-
   try {
-    return await fetchHtmlViaRegionalProxy(rawUrl, preferredRegion, "http");
+    const httpPage = await fetchHtmlViaRegionalProxy(rawUrl, preferredRegion, "http");
+    const needsBrowserRetry = (() => {
+      if (preferredRegion !== "nz") {
+        return false;
+      }
+
+      try {
+        const detection = detectTrackedItemFromHtml(httpPage.url, httpPage.html);
+        return detection.currency !== "NZD";
+      } catch {
+        return true;
+      }
+    })();
+
+    if (!needsBrowserRetry) {
+      return httpPage;
+    }
+
+    try {
+      return await fetchHtmlViaRegionalProxy(rawUrl, preferredRegion, "browser");
+    } catch {
+      return httpPage;
+    }
   } catch {
     return fetchHtmlViaRegionalProxy(rawUrl, preferredRegion, "browser");
   }
