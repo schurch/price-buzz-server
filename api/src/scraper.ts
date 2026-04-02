@@ -765,42 +765,119 @@ function inferCurrencyFromText(value: string): string {
   return extractCurrencyCode(value);
 }
 
+// Heuristic candidate-ranking weights. These are intentionally grouped here so
+// the relative strength of each signal is reviewable without changing behavior.
+const PRICE_SCORE = {
+  inlineCurrencyExplicit: 8,
+  inlineCurrencyAmbiguousDollar: -6,
+  purchaseContext: 8,
+  baseGameOfferType: 18,
+  inlineCurrentPriceContext: 4,
+  inlineStrongPurchaseContext: 16,
+  inlineDiscountNoise: -10,
+  inlineLayoutNoise: -18,
+  inlineEditionPenalty: -20,
+  inlineOtherSellersPenalty: -18,
+  inlineOptionFromPenalty: -14,
+
+  genericPriceKey: -10,
+  genericCurrentPriceKey: 22,
+  genericOriginalPriceKey: -14,
+  currentPriceAndSignal: 18,
+  currentValueSignal: 7,
+  currentSignalOnly: 8,
+  priceSignalOnly: 12,
+  genericValueSignal: 4,
+  minorUnitSignal: 18,
+  originalPriceSignal: -12,
+
+  jsonStructuredPriceContext: 12,
+  jsonPurchaseContext: 10,
+  jsonAvailabilityContext: 6,
+  jsonRewardsPenalty: -24,
+  jsonDiscountPenalty: -12,
+  jsonEditionPenalty: -10,
+  jsonFuturePenalty: -16,
+  jsonOriginalPricePenalty: -16,
+  jsonOtherSellersPenalty: -22,
+  jsonOptionPenalty: -16,
+
+  offerFuturePenalty: -40,
+  offerCurrentBonus: 4,
+  offerExpiredPenalty: -24,
+  offerValidUntilBonus: 2,
+
+  nameExactMatch: 12,
+  namePartialMatch: 5,
+  nameMismatchPenalty: -8,
+  structuredBaseGameBonus: 10,
+  structuredEditionPenalty: -12,
+  structuredDiscountPenalty: -8,
+  structuredFuturePenalty: -14,
+  structuredAvailabilityBonus: 4,
+  structuredUnavailablePenalty: -16,
+  invalidNumericPenalty: -40,
+
+  genericSelectorBase: 10,
+  genericSelectorProductBonus: 6,
+  genericSelectorTestIdBonus: 3,
+  genericSelectorDataPriceBonus: 8,
+  genericSelectorHiddenPenalty: -8,
+  genericSelectorNoisePenalty: -6,
+  genericSelectorWasPricePenalty: -14,
+  genericSelectorCurrentPriceBonus: 8,
+  genericSelectorOptionPenalty: -18,
+  genericSelectorNoOffersPenalty: -12,
+  genericSelectorCompactTextBonus: 2,
+  inclusiveTaxBonus: 8,
+  exclusiveTaxPenalty: -5,
+
+  purchaseTextPattern: 14,
+  inlineCurrencyPattern: -2,
+
+  jsonLdBase: 30,
+  jsonLdPrimaryPriceBonus: 6,
+  jsonLdLowPriceBonus: 5,
+
+  capturedOfferBase: 80
+} as const;
+
 function scoreInlineCurrencyMatch(pageHtml: string, startIndex: number, rawText: string): number {
   const context = pageHtml.slice(Math.max(0, startIndex - 240), Math.min(pageHtml.length, startIndex + 240)).toLowerCase();
   let score = 0;
 
   if (/nz\$|nzd|a\$|au\$|aud|us\$|usd|c\$|cad|s\$|sgd|hk\$|hkd|¥|jpy|chf|€|eur|£|gbp/i.test(rawText)) {
-    score += 8;
+    score += PRICE_SCORE.inlineCurrencyExplicit;
   } else if (/^\s*\$\s*/.test(rawText)) {
-    score -= 6;
+    score += PRICE_SCORE.inlineCurrencyAmbiguousDollar;
   }
 
   if (/base game|buy now|add to cart|pre-purchase|purchase|owned|wishlist|get|checkout/.test(context)) {
-    score += 8;
+    score += PRICE_SCORE.purchaseContext;
   }
   if (/offertype["':\s_]*base[_\s-]*game/.test(context)) {
-    score += 18;
+    score += PRICE_SCORE.baseGameOfferType;
   }
   if (/price|sale price|current price|now available/.test(context)) {
-    score += 4;
+    score += PRICE_SCORE.inlineCurrentPriceContext;
   }
   if (/sellingprice|pricecontainer|productupper|buyingoption|add to bag/.test(context)) {
-    score += 16;
+    score += PRICE_SCORE.inlineStrongPurchaseContext;
   }
   if (/save|discount|off\b|coupon|voucher|reward|cashback|xp|points|rating|reviews|star/.test(context)) {
-    score -= 10;
+    score += PRICE_SCORE.inlineDiscountNoise;
   }
   if (/shipping|free shipping|below\s+(?:nz\$|a\$|au\$|us\$|\$|€|£)|\border\b|navbar|promotion|promo|banner|listitem/.test(context)) {
-    score -= 18;
+    score += PRICE_SCORE.inlineLayoutNoise;
   }
   if (/deluxe edition|edition upgrade|add-on|addon|dlc|bundle includes|offertype["':\s_]*edition|offertype["':\s_]*dlc/.test(context)) {
-    score -= 20;
+    score += PRICE_SCORE.inlineEditionPenalty;
   }
   if (/other sellers|no featured offers available|buying options|see all buying options/.test(context)) {
-    score -= 18;
+    score += PRICE_SCORE.inlineOtherSellersPenalty;
   }
   if (/\boption from\b|\bfrom \$|\bfrom [a-z]{3}\b/.test(context)) {
-    score -= 14;
+    score += PRICE_SCORE.inlineOptionFromPenalty;
   }
 
   return score;
@@ -809,38 +886,38 @@ function scoreInlineCurrencyMatch(pageHtml: string, startIndex: number, rawText:
 function scoreJsonPriceKey(key: string): number {
   const loweredKey = key.toLowerCase();
   if (loweredKey === "price") {
-    return -10;
+    return PRICE_SCORE.genericPriceKey;
   }
   if (/discountprice|saleprice|currentprice|offerprice|sellingprice/.test(loweredKey)) {
-    return 22;
+    return PRICE_SCORE.genericCurrentPriceKey;
   }
   if (/originalprice|regularprice|wasprice|compareatprice|listprice/.test(loweredKey)) {
-    return -14;
+    return PRICE_SCORE.genericOriginalPriceKey;
   }
   const hasCurrentSignal = /current|sale|offer|promo|online|member|club/.test(loweredKey);
   const hasPriceSignal = /price/.test(loweredKey);
   const hasGenericValueSignal = /amount|value/.test(loweredKey);
 
   if (hasCurrentSignal && hasPriceSignal) {
-    return 18;
+    return PRICE_SCORE.currentPriceAndSignal;
   }
   if (hasCurrentSignal && hasGenericValueSignal) {
-    return 7;
+    return PRICE_SCORE.currentValueSignal;
   }
   if (hasCurrentSignal) {
-    return 8;
+    return PRICE_SCORE.currentSignalOnly;
   }
   if (hasPriceSignal) {
-    return 12;
+    return PRICE_SCORE.priceSignalOnly;
   }
   if (hasGenericValueSignal) {
-    return 4;
+    return PRICE_SCORE.genericValueSignal;
   }
   if (/cents|cent|minor/.test(loweredKey)) {
-    return 18;
+    return PRICE_SCORE.minorUnitSignal;
   }
   if (/was|original|regular|before|compare/.test(loweredKey)) {
-    return -12;
+    return PRICE_SCORE.originalPriceSignal;
   }
   return 0;
 }
@@ -851,34 +928,34 @@ function scoreJsonContext(pageHtml: string, matchIndex: number, key: string): nu
   let score = 0;
 
   if (/totalprice|fmtprice|currencycode|discountprice|originalprice/.test(context)) {
-    score += 12;
+    score += PRICE_SCORE.jsonStructuredPriceContext;
   }
   if (/base game|buy now|add to cart|purchasecta|purchase-cta|checkout|offertype["':\s_]*base[_\s-]*game/.test(context)) {
-    score += 10;
+    score += PRICE_SCORE.jsonPurchaseContext;
   }
   if (/current|sale|offer|price specification|pricecurrency|in stock|available/.test(context) || /current|sale|offer/.test(loweredKey)) {
-    score += 6;
+    score += PRICE_SCORE.jsonAvailabilityContext;
   }
   if (/rewards?|earn\s+\d+%?\s*back|cashback|reward chip|membership discount|subscriber discount|points|xp/.test(context)) {
-    score -= 24;
+    score += PRICE_SCORE.jsonRewardsPenalty;
   }
   if (/discount|promo|promotion|special offer|voucher|coupon|rewards?/.test(context) || /discount|promo|promotion/.test(loweredKey)) {
-    score -= 12;
+    score += PRICE_SCORE.jsonDiscountPenalty;
   }
   if (/deluxe|upgrade|add-on|addon|dlc|bundle|edition|offertype["':\s_]*edition|offertype["':\s_]*dlc/.test(context) || /deluxe|upgrade|addon|bundle|edition/.test(loweredKey)) {
-    score -= 10;
+    score += PRICE_SCORE.jsonEditionPenalty;
   }
   if (/pricevaliduntil|validuntil|startdate|purchasestateeffectivedate|scheduled|future|upcoming/.test(context) || /validuntil|startdate|future|scheduled/.test(loweredKey)) {
-    score -= 16;
+    score += PRICE_SCORE.jsonFuturePenalty;
   }
   if (/was|original|regular|before|compare/.test(context) || /was|original|regular|before|compare/.test(loweredKey)) {
-    score -= 16;
+    score += PRICE_SCORE.jsonOriginalPricePenalty;
   }
   if (/other sellers|no featured offers available|buying options|see all buying options/.test(context)) {
-    score -= 22;
+    score += PRICE_SCORE.jsonOtherSellersPenalty;
   }
   if (/\bolpmessage\b|\boption from\b|\bfrom \$|\bfrom [a-z]{3}\b/.test(context) || /olp|option/.test(loweredKey)) {
-    score -= 16;
+    score += PRICE_SCORE.jsonOptionPenalty;
   }
 
   return score;
@@ -912,17 +989,17 @@ function scoreOfferTiming(offer: Record<string, unknown>): number {
 
   if (validFrom !== null) {
     if (validFrom > now + 60_000) {
-      score -= 40;
+      score += PRICE_SCORE.offerFuturePenalty;
     } else {
-      score += 4;
+      score += PRICE_SCORE.offerCurrentBonus;
     }
   }
 
   if (validUntil !== null) {
     if (validUntil < now - 60_000) {
-      score -= 24;
+      score += PRICE_SCORE.offerExpiredPenalty;
     } else {
-      score += 2;
+      score += PRICE_SCORE.offerValidUntilBonus;
     }
   }
 
@@ -945,34 +1022,34 @@ function scoreStructuredOfferContext(
 
   if (loweredProductName && loweredCandidateName) {
     if (loweredCandidateName === loweredProductName) {
-      score += 12;
+      score += PRICE_SCORE.nameExactMatch;
     } else if (loweredCandidateName.includes(loweredProductName) || loweredProductName.includes(loweredCandidateName)) {
-      score += 5;
+      score += PRICE_SCORE.namePartialMatch;
     } else {
-      score -= 8;
+      score += PRICE_SCORE.nameMismatchPenalty;
     }
   }
 
   if (/base game/.test(offerContext)) {
-    score += 10;
+    score += PRICE_SCORE.structuredBaseGameBonus;
   }
   if (/deluxe|upgrade|add-on|addon|dlc|bundle|edition/.test(loweredCandidateName) || /deluxe|upgrade|add-on|addon|dlc|bundle|edition/.test(offerContext)) {
-    score -= 12;
+    score += PRICE_SCORE.structuredEditionPenalty;
   }
   if (/sale|discount|promo|promotion|special offer|deal/.test(offerContext)) {
-    score -= 8;
+    score += PRICE_SCORE.structuredDiscountPenalty;
   }
   if (/scheduled|upcoming|future|prepurchase|pre-order|preorder|coming soon/.test(offerContext)) {
-    score -= 14;
+    score += PRICE_SCORE.structuredFuturePenalty;
   }
   if (/in stock|instock|available|active/.test(offerContext)) {
-    score += 4;
+    score += PRICE_SCORE.structuredAvailabilityBonus;
   }
   if (/outofstock|out of stock|unavailable|expired/.test(offerContext)) {
-    score -= 16;
+    score += PRICE_SCORE.structuredUnavailablePenalty;
   }
   if (!Number.isFinite(numericValue) || numericValue <= 0) {
-    score -= 40;
+    score += PRICE_SCORE.invalidNumericPenalty;
   }
 
   return score;
@@ -1094,23 +1171,23 @@ function detectGenericPriceCandidate(pageHtml: string, $: cheerio.CheerioAPI): {
 
       try {
         const extraction = buildPriceExtraction(raw);
-        let score = 10 - index;
+        let score = PRICE_SCORE.genericSelectorBase - index;
         const loweredSelector = selector.toLowerCase();
         const loweredRaw = raw.toLowerCase();
-        if (loweredSelector.includes("product")) score += 6;
-        if (loweredSelector.includes("data-testid")) score += 3;
-        if (attribute === "data-price") score += 8;
-        if (node.parents("script,noscript,style").length > 0) score -= 8;
-        if (/wishlist|discount|save|xp|rating|reviews|star/.test(loweredRaw)) score -= 6;
-        if (/\bwas\b|previously|before/.test(loweredRaw)) score -= 14;
-        if (/\bnow\b|current price|club price|special/.test(loweredRaw)) score += 8;
-        if (/other sellers|buying options|option from|from \$|from [a-z]{3}\b/.test(loweredRaw)) score -= 18;
-        if (/no featured offers available/.test(pageHtml.toLowerCase())) score -= 12;
-        if (node.text().trim().length <= 18) score += 2;
+        if (loweredSelector.includes("product")) score += PRICE_SCORE.genericSelectorProductBonus;
+        if (loweredSelector.includes("data-testid")) score += PRICE_SCORE.genericSelectorTestIdBonus;
+        if (attribute === "data-price") score += PRICE_SCORE.genericSelectorDataPriceBonus;
+        if (node.parents("script,noscript,style").length > 0) score += PRICE_SCORE.genericSelectorHiddenPenalty;
+        if (/wishlist|discount|save|xp|rating|reviews|star/.test(loweredRaw)) score += PRICE_SCORE.genericSelectorNoisePenalty;
+        if (/\bwas\b|previously|before/.test(loweredRaw)) score += PRICE_SCORE.genericSelectorWasPricePenalty;
+        if (/\bnow\b|current price|club price|special/.test(loweredRaw)) score += PRICE_SCORE.genericSelectorCurrentPriceBonus;
+        if (/other sellers|buying options|option from|from \$|from [a-z]{3}\b/.test(loweredRaw)) score += PRICE_SCORE.genericSelectorOptionPenalty;
+        if (/no featured offers available/.test(pageHtml.toLowerCase())) score += PRICE_SCORE.genericSelectorNoOffersPenalty;
+        if (node.text().trim().length <= 18) score += PRICE_SCORE.genericSelectorCompactTextBonus;
         const hasInclusiveTaxLabel = /(?:inc|incl)\.?\s*(?:gst|vat|tax)\b|(?:including|with)\s+tax\b|tax\s*included\b|\bttc\b|\btva\s*incl(?:use)?\b/.test(loweredRaw);
         const hasExclusiveTaxLabel = /\+gst\b|ex\s*gst\b|excluding\s*gst\b|\+vat\b|ex\s*vat\b|excluding\s*vat\b|ex\s*tax\b|excluding\s*tax\b|tax\s*excluded\b/.test(loweredRaw);
-        if (hasInclusiveTaxLabel) score += 8;
-        if (hasExclusiveTaxLabel && !hasInclusiveTaxLabel) score -= 5;
+        if (hasInclusiveTaxLabel) score += PRICE_SCORE.inclusiveTaxBonus;
+        if (hasExclusiveTaxLabel && !hasInclusiveTaxLabel) score += PRICE_SCORE.exclusiveTaxPenalty;
 
         candidates.push({
           selector,
@@ -1133,12 +1210,12 @@ function detectGenericPriceCandidate(pageHtml: string, $: cheerio.CheerioAPI): {
     {
       regex: /(?:Base\s+Game|Buy\s+Now|Add\s+To\s+Cart|Pre-Purchase|Wishlist)[\s\S]{0,400}?((?:NZ\$|A\$|AU\$|US\$|\$|€|£)\s*[0-9]+(?:\.[0-9]{2})?)/gi,
       source: "auto:purchase-text-price",
-      score: 14
+      score: PRICE_SCORE.purchaseTextPattern
     },
     {
       regex: /((?:NZ\$|A\$|AU\$|US\$|\$|€|£)\s*[0-9]+(?:\.[0-9]{2})?)/gi,
       source: "auto:inline-currency-price",
-      score: -2
+      score: PRICE_SCORE.inlineCurrencyPattern
     }
   ];
 
@@ -1401,15 +1478,15 @@ function detectJsonLdPrice(html: string): { previewRawText: string; previewPrice
             if ((typeof rawCandidate === "string" || typeof rawCandidate === "number") && `${rawCandidate}`.trim()) {
               const normalized = `${rawCandidate}`.trim();
               const previewPrice = buildPriceExtraction(normalized).previewPrice;
-              let score = 30;
+              let score = PRICE_SCORE.jsonLdBase;
               if (typeof price === "string" || typeof price === "number") {
                 if (`${rawCandidate}` === `${price}`) {
-                  score += 6;
+                  score += PRICE_SCORE.jsonLdPrimaryPriceBonus;
                 }
               }
               if (typeof lowPrice === "string" || typeof lowPrice === "number") {
                 if (`${rawCandidate}` === `${lowPrice}`) {
-                  score += 5;
+                  score += PRICE_SCORE.jsonLdLowPriceBonus;
                 }
               }
               const offerName = typeof (offer as { name?: unknown }).name === "string"
@@ -1558,7 +1635,7 @@ function detectCapturedOfferPrice(
           : typeof offer.productSlug === "string"
             ? offer.productSlug.trim()
             : productName;
-        const score = 80 + scoreStructuredOfferContext(
+        const score = PRICE_SCORE.capturedOfferBase + scoreStructuredOfferContext(
           productName,
           offerName,
           offer,
