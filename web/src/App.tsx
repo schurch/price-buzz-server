@@ -174,8 +174,8 @@ function LandingPage({ user }: { user: User | null }) {
                 <svg viewBox="0 0 320 160" preserveAspectRatio="none" aria-hidden="true">
                   <defs>
                     <linearGradient id="landing-preview-fill" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="rgba(15, 123, 255, 0.36)" />
-                      <stop offset="100%" stopColor="rgba(15, 123, 255, 0.04)" />
+                      <stop offset="0%" stopColor="var(--accent-fill-strong)" />
+                      <stop offset="100%" stopColor="var(--accent-fill-soft)" />
                     </linearGradient>
                   </defs>
                   <line x1="20" y1="132" x2="300" y2="132" className="sparkline-baseline" />
@@ -428,145 +428,194 @@ function DashboardPage({ user }: { user: User }) {
     }
   }
 
+  const groupedItems = useMemo(
+    () => groupAndSortItems(items, sortMode, groupMode),
+    [items, sortMode, groupMode]
+  );
+  const trackedCount = items.length;
+  const availableCount = items.filter((item) => item.latestCheck?.availability === "available").length;
+  const unavailableCount = items.filter((item) => item.latestCheck?.availability === "unavailable").length;
+  const recentlyCheckedCount = items.filter((item) => {
+    const checkedAt = item.latestCheck?.checkedAt;
+    if (!checkedAt) return false;
+    const ageMs = Date.now() - Date.parse(checkedAt);
+    return Number.isFinite(ageMs) && ageMs <= 1000 * 60 * 60 * 24;
+  }).length;
+
   if (busy) {
     return <AppShell user={user}><div className="screen-center">Loading dashboard…</div></AppShell>;
   }
 
-  const groupedItems = groupAndSortItems(items, sortMode, groupMode);
-
   return (
     <AppShell user={user}>
-      <section className="page-header">
-        <div>
-          <p className="eyebrow">Dashboard</p>
-          <h1>{items.length === 0 ? "Add your first item" : "Your tracked items"}</h1>
-        </div>
-      </section>
-
       <BannerBox banner={banner} />
-
-      <section className="grid page-grid">
-        <div className="panel panel-span-full">
-          <h2>Add an item</h2>
-          <form className="stack" onSubmit={handleDetect}>
-            <label className="field">
-              <input value={detectUrl} onChange={(event) => setDetectUrl(event.target.value)} placeholder="https://…" required />
-            </label>
-            <button className="button primary" disabled={detectBusy}>{detectBusy ? "Checking…" : "Check price"}</button>
-          </form>
+      <section className="dashboard-hero">
+        <div className="dashboard-hero-copy">
+          <p className="eyebrow">Dashboard</p>
+          <h1>{trackedCount === 0 ? "Track your first product" : "Tracked price history"}</h1>
+          <p className="dashboard-hero-text">
+            Current prices, availability, lowest observed prices, and quick trend lines for every tracked item.
+          </p>
         </div>
-      </section>
 
-      {detection && (
-        <section className="panel">
-          <h2>Check the details</h2>
-          <form className="stack" onSubmit={handleSave}>
-            <div className="grid two review-grid">
-              <div className="field">
-                <span>Name</span>
-                <div className="field-display">{nameOverride || detection.name}</div>
-              </div>
-              <div className="field">
-                <span>Price found</span>
-                <div className="field-display">{formatPrice(detection.previewPrice, detection.currency)}</div>
-              </div>
-              <div className="field">
-                <span>Availability</span>
-                <div className="field-display">{formatAvailability(detection.availability)}</div>
-              </div>
-            </div>
-            <button className="button primary" disabled={saveBusy}>{saveBusy ? "Saving…" : "Start tracking"}</button>
-          </form>
-        </section>
-      )}
-
-      <section className="panel">
-        <div className="section-header">
-          <h2>Your items</h2>
-          <span className="muted">{items.length === 0 ? "No items yet." : `${items.length} active`}</span>
-        </div>
-        {items.length === 0 ? (
-          <div className="empty-state">
-            <p>No items yet. Add a link above to start tracking your first one.</p>
+        <div className="dashboard-hero-stats">
+          <div className="dashboard-hero-stat">
+            <span className="dashboard-hero-label">Tracked items</span>
+            <strong className="dashboard-hero-value">{trackedCount}</strong>
           </div>
-        ) : (
-          <>
-            <div className="item-toolbar">
-              <label className="field">
-                <span>Sort by</span>
-                <select value={sortMode} onChange={(event) => setSortMode(event.target.value as ItemSortMode)}>
-                  <option value="checked">Last checked</option>
-                  <option value="name">Name</option>
-                  <option value="latest">Latest price</option>
-                  <option value="lowest">Lowest price</option>
-                </select>
-              </label>
-              <label className="field">
-                <span>Group by</span>
-                <select value={groupMode} onChange={(event) => setGroupMode(event.target.value as ItemGroupMode)}>
-                  <option value="none">No grouping</option>
-                  <option value="status">Status</option>
-                  <option value="currency">Currency</option>
-                  <option value="site">Site</option>
-                </select>
-              </label>
+          <div className="dashboard-hero-stat">
+            <span className="dashboard-hero-label">Available now</span>
+            <strong className="dashboard-hero-value">{availableCount}</strong>
+          </div>
+          <div className="dashboard-hero-stat">
+            <span className="dashboard-hero-label">Unavailable</span>
+            <strong className="dashboard-hero-value">{unavailableCount}</strong>
+          </div>
+          <div className="dashboard-hero-stat">
+            <span className="dashboard-hero-label">Checked in 24h</span>
+            <strong className="dashboard-hero-value">{recentlyCheckedCount}</strong>
+          </div>
+        </div>
+
+        <form className="dashboard-detect" onSubmit={handleDetect}>
+          <div className="dashboard-detect-field">
+            <label htmlFor="detect-url">Add item URL</label>
+            <input
+              id="detect-url"
+              value={detectUrl}
+              onChange={(event) => setDetectUrl(event.target.value)}
+              placeholder="https://…"
+              required
+            />
+          </div>
+          <button className="button primary" disabled={detectBusy}>{detectBusy ? "Checking…" : "Check item"}</button>
+        </form>
+
+        {detection && (
+          <form className="dashboard-review" onSubmit={handleSave}>
+            <div className="dashboard-review-grid">
+              <div className="dashboard-review-cell">
+                <span>Name</span>
+                <strong>{nameOverride || detection.name}</strong>
+              </div>
+              <div className="dashboard-review-cell">
+                <span>Price found</span>
+                <strong>{formatPrice(detection.previewPrice, detection.currency)}</strong>
+              </div>
+              <div className="dashboard-review-cell">
+                <span>Availability</span>
+                <strong>{formatAvailability(detection.availability)}</strong>
+              </div>
             </div>
-            <div className="item-groups">
-              {groupedItems.map(([groupName, groupItems]) => (
-                <details
-                  key={groupName}
-                  className="item-group"
-                  open={groupMode === "none" ? true : Boolean(openGroups[groupName])}
-                  onToggle={(event) => {
-                    if (groupMode === "none") return;
-                    const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
-                    setOpenGroups((current) => ({ ...current, [groupName]: nextOpen }));
-                  }}
-                >
-                  <summary className="item-group-header">
-                    <h3>{groupName}</h3>
-                    <span className="muted">{groupItems.length} item{groupItems.length === 1 ? "" : "s"}</span>
-                  </summary>
-                  <div className="item-list">
-                    {groupItems.map((item) => (
-                      <article key={item.id} className="item-card">
-                        <div className="item-card-header">
-                          <div className="item-card-copy">
-                            <div className="item-card-topline">
-                              <a className="site-badge" href={siteHomeUrl(item.url)} target="_blank" rel="noreferrer">{siteLabel(item.url)}</a>
-                            </div>
-                            <h3>{item.name}</h3>
-                            <a className="item-url" href={item.url} target="_blank" rel="noreferrer">{item.url}</a>
-                          </div>
-                          <button className="button danger" onClick={() => void handleDelete(item.id)}>Archive</button>
-                        </div>
-                        <dl className="stats-list compact">
-                          <div><dt>Current</dt><dd>{formatPrice(item.latestCheck?.price ?? null, item.latestCheck?.currency ?? item.currency)}</dd></div>
-                          <div><dt>Availability</dt><dd>{formatAvailability(item.latestCheck?.availability ?? null)}</dd></div>
-                          <div><dt>Lowest</dt><dd>{formatPrice(item.lowestPrice, item.currency)}</dd></div>
-                          <div><dt>Checked</dt><dd>{formatTimestamp(item.latestCheck?.checkedAt ?? null)}</dd></div>
-                        </dl>
-                        <Sparkline item={item} />
-                        <div className="history-block">
-                          <h4>Recent prices</h4>
-                          <ul>
-                            {item.history.length === 0 ? <li>No prices yet.</li> : item.history.map((entry) => (
-                              <li key={entry.id}>
-                                <span>{formatTimestamp(entry.checkedAt)}</span>
-                                <span>{entry.status === "ok" ? `${formatPrice(entry.price, entry.currency)} · ${formatAvailability(entry.availability)}` : "An error occurred"}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                </details>
-              ))}
+            <div className="hero-actions">
+              <button className="button primary" disabled={saveBusy}>{saveBusy ? "Saving…" : "Start tracking"}</button>
             </div>
-          </>
+          </form>
         )}
       </section>
+
+      <section className="dashboard-controls">
+        <label className="field">
+          <span>Group by</span>
+          <select value={groupMode} onChange={(event) => setGroupMode(event.target.value as ItemGroupMode)}>
+            <option value="none">No grouping</option>
+            <option value="currency">Currency</option>
+            <option value="site">Store</option>
+            <option value="status">Status</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Sort by</span>
+          <select value={sortMode} onChange={(event) => setSortMode(event.target.value as ItemSortMode)}>
+            <option value="name">Name</option>
+            <option value="latest">Current price</option>
+            <option value="lowest">Lowest price</option>
+            <option value="checked">Most recently checked</option>
+          </select>
+        </label>
+      </section>
+
+      {trackedCount === 0 ? (
+        <div className="dashboard-empty">No tracked items yet. Add a link above to start building your dashboard.</div>
+      ) : (
+        <section className="dashboard-groups">
+          {groupedItems.map(([groupName, groupItems]) => (
+            <details
+              key={groupName}
+              className="dashboard-group"
+              open={groupMode === "none" ? true : Boolean(openGroups[groupName])}
+              onToggle={(event) => {
+                if (groupMode === "none") return;
+                const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
+                setOpenGroups((current) => ({ ...current, [groupName]: nextOpen }));
+              }}
+            >
+              <summary className="dashboard-group-header">
+                <h2>{groupName}</h2>
+                <span>{groupItems.length} item{groupItems.length === 1 ? "" : "s"}</span>
+              </summary>
+              <div className="dashboard-card-grid">
+                {groupItems.map((item) => (
+                  <article key={item.id} className="dashboard-card">
+                    <div className="dashboard-card-top">
+                      <div className="dashboard-card-copy">
+                        <a className="site-badge" href={siteHomeUrl(item.url)} target="_blank" rel="noreferrer">{siteLabel(item.url)}</a>
+                        <h3>{item.name}</h3>
+                      </div>
+                      <span className="dashboard-pill">{formatAvailability(item.latestCheck?.availability ?? null)}</span>
+                    </div>
+
+                    <dl className="dashboard-card-stats">
+                      <div>
+                        <dt>Current</dt>
+                        <dd>{formatPrice(item.latestCheck?.price ?? null, item.latestCheck?.currency ?? item.currency)}</dd>
+                      </div>
+                      <div>
+                        <dt>Lowest</dt>
+                        <dd>{formatPrice(item.lowestPrice, item.currency)}</dd>
+                      </div>
+                      <div>
+                        <dt>Checked</dt>
+                        <dd>{formatTimestamp(item.latestCheck?.checkedAt ?? null)}</dd>
+                      </div>
+                      <div>
+                        <dt>Status</dt>
+                        <dd>{item.latestCheck?.status === "error" ? "Error" : "Tracking"}</dd>
+                      </div>
+                    </dl>
+
+                    <div className="dashboard-graph-wrap">
+                      <div className="dashboard-graph-head">
+                        <span>Trend</span>
+                        <span>{historyMeta(item)}</span>
+                      </div>
+                      <Sparkline item={item} />
+                    </div>
+
+                    <div className="dashboard-card-meta">
+                      <a className="item-url" href={item.url} target="_blank" rel="noreferrer">{item.url}</a>
+                    </div>
+
+                    <div className="history-block">
+                      <h4>Recent checks</h4>
+                      <ul>
+                        {item.history.length === 0 ? <li>No prices yet.</li> : item.history.slice(0, 4).map((entry) => (
+                          <li key={entry.id}>
+                            <span>{formatTimestamp(entry.checkedAt)}</span>
+                            <span>{entry.status === "ok" ? `${formatPrice(entry.price, entry.currency)} · ${formatAvailability(entry.availability)}` : "An error occurred"}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    <button className="button danger dashboard-card-action" onClick={() => void handleDelete(item.id)}>Archive</button>
+                  </article>
+                ))}
+              </div>
+            </details>
+          ))}
+        </section>
+      )}
     </AppShell>
   );
 }
@@ -623,6 +672,11 @@ function Sparkline({ item }: { item: TrackedItemWithHistory }) {
       </svg>
     </div>
   );
+}
+
+function historyMeta(item: TrackedItemWithHistory): string {
+  const successfulPoints = item.history.filter((entry) => entry.status === "ok" && entry.price).length;
+  return successfulPoints === 0 ? "No price history" : `${successfulPoints} point${successfulPoints === 1 ? "" : "s"}`;
 }
 
 function SettingsPage({
