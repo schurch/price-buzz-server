@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { shouldTryBrowserForHttpPage, shouldUseBrowserFallbackForHtml } from "../src/scraper/blocking.ts";
+import { detectBlockedPageMessage, shouldTryBrowserForHttpPage, shouldUseBrowserFallbackForHtml } from "../src/scraper/blocking.ts";
 import {
   detectTrackedItemFromHtml,
   extractTrackedItemCheckDataFromHtml,
@@ -115,6 +115,35 @@ test("Incapsula interstitials force browser fallback", () => {
 
   assert.equal(result.shouldTry, true);
   assert.match(result.blockedMessage ?? "", /blocking automated access/i);
+});
+
+test("Shopify captcha bootstrap does not block product pages with embedded price data", () => {
+  const html = `
+    <html>
+      <head>
+        <title>Ninja Air Fryer 4.7L Pro</title>
+        <script id="captcha-bootstrap">window.Shopify = window.Shopify || {};</script>
+        <script>
+          var product = {
+            "priceCurrency": "NZD",
+            "variants": [{ "id": 48056312004845, "price": 13999 }]
+          };
+        </script>
+      </head>
+      <body>
+        <div class="price">$139.99</div>
+      </body>
+    </html>
+  `;
+
+  assert.equal(
+    detectBlockedPageMessage(
+      html,
+      "https://ninjakitchen.co.nz/products/ninja-air-fryer-4-7l-pro?variant=48056312004845",
+      "Ninja Air Fryer 4.7L Pro"
+    ),
+    null
+  );
 });
 
 test("The Warehouse fixture resolves the NZD product price", () => {

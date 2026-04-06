@@ -97,6 +97,10 @@ export function shouldUseBrowserFallback(error: unknown): boolean {
 
 export function detectBlockedPageMessage(html: string, pageUrl: string, title: string): string | null {
   const lowered = `${title}\n${pageUrl}\n${html.slice(0, 16000)}`.toLowerCase();
+  const hasShopifyCaptchaBootstrap = lowered.includes("captcha-bootstrap");
+  const hasEmbeddedPriceData = hasEmbeddedPriceSignals(html);
+  const hasGenericCaptchaProviderMarkers = /g-recaptcha|h-captcha|cf-chl/.test(lowered);
+  const hasHardChallengeMarkers = /verify you are human|unusual traffic|bot detection|just a moment|enable cookies/.test(lowered);
 
   if (/\/waf_deny_page\/|temporarily down|error code:\s*#\d+|access denied/.test(lowered)) {
     return "This retailer is blocking automated access right now, so PriceBuzz could not load the real product page.";
@@ -106,7 +110,13 @@ export function detectBlockedPageMessage(html: string, pageUrl: string, title: s
     return "This retailer is blocking automated access right now, so PriceBuzz could not load the real product page.";
   }
 
-  if (/captcha|verify you are human|unusual traffic|bot detection|just a moment|enable javascript|enable cookies/.test(lowered)) {
+  if (
+    hasHardChallengeMarkers
+    || (hasGenericCaptchaProviderMarkers && !(hasShopifyCaptchaBootstrap && hasEmbeddedPriceData))
+    || (/captcha/.test(lowered) && !hasEmbeddedPriceData && !hasShopifyCaptchaBootstrap)
+    || (/enable javascript/.test(lowered) && !hasEmbeddedPriceData)
+    || (/challenge-platform/.test(lowered) && !hasEmbeddedPriceData)
+  ) {
     return "This retailer is challenging automated traffic right now, so PriceBuzz could not load the real product page.";
   }
 
@@ -115,11 +125,21 @@ export function detectBlockedPageMessage(html: string, pageUrl: string, title: s
 
 export function isBrowserChallengePage(html: string, pageUrl: string, title: string): boolean {
   const lowered = `${title}\n${pageUrl}\n${html.slice(0, 12000)}`.toLowerCase();
-  return /captcha|verify you are human|access denied|temporarily blocked|unusual traffic|enable javascript|enable cookies|akamai|bot detection|just a moment|incapsula|imperva|_incapsula_resource/.test(lowered);
+  const hasShopifyCaptchaBootstrap = lowered.includes("captcha-bootstrap");
+  const hasEmbeddedPriceData = hasEmbeddedPriceSignals(html);
+  const hasGenericCaptchaProviderMarkers = /g-recaptcha|h-captcha|cf-chl/.test(lowered);
+  const hasHardChallengeMarkers = /verify you are human|access denied|temporarily blocked|unusual traffic|enable cookies|akamai|bot detection|just a moment|incapsula|imperva|_incapsula_resource/.test(lowered);
+  return (
+    hasHardChallengeMarkers
+    || (hasGenericCaptchaProviderMarkers && !(hasShopifyCaptchaBootstrap && hasEmbeddedPriceData))
+    || (/captcha/.test(lowered) && !hasEmbeddedPriceData && !hasShopifyCaptchaBootstrap)
+    || (/enable javascript/.test(lowered) && !hasEmbeddedPriceData)
+    || (/challenge-platform/.test(lowered) && !hasEmbeddedPriceData)
+  );
 }
 
 export function hasEmbeddedPriceSignals(html: string): boolean {
-  return /product:price|pricecurrency|itemprop=["']price["']|data-price|schema\.org\/product|"price"\s*:|price__dollars|price__cents/i.test(html);
+  return /product:price|pricecurrency|currencycode|itemprop=["']price["']|data-price|schema\.org\/product|"price"\s*:|"price"\s*:\s*\d{3,}|price\s*:\s*["']?\d{3,}|compare_at_price|price__dollars|price__cents/i.test(html);
 }
 
 export function shouldTryBrowserForHttpPage(rawUrl: string, page: { html: string; url: string }): {
