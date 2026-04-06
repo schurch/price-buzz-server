@@ -54,6 +54,7 @@ type AdminRunSummary = {
     url: string;
     status: "ok" | "error";
     checkedAt: string;
+    availability: "available" | "unavailable" | null;
     price: string | null;
     currency: string | null;
     errorMessage: string | null;
@@ -399,6 +400,7 @@ function DashboardPage({ user }: { user: User }) {
         pageTitle: detection.pageTitle,
         url: detection.url,
         currency: detection.currency,
+        initialDetectedAvailability: detection.availability,
         initialDetectedPrice: detection.previewPrice,
         initialDetectedCurrency: detection.currency,
         initialDetectedRawText: detection.previewRawText,
@@ -468,6 +470,10 @@ function DashboardPage({ user }: { user: User }) {
                 <span>Price found</span>
                 <div className="field-display">{formatPrice(detection.previewPrice, detection.currency)}</div>
               </div>
+              <div className="field">
+                <span>Availability</span>
+                <div className="field-display">{formatAvailability(detection.availability)}</div>
+              </div>
             </div>
             <button className="button primary" disabled={saveBusy}>{saveBusy ? "Saving…" : "Start tracking"}</button>
           </form>
@@ -536,6 +542,7 @@ function DashboardPage({ user }: { user: User }) {
                         </div>
                         <dl className="stats-list compact">
                           <div><dt>Current</dt><dd>{formatPrice(item.latestCheck?.price ?? null, item.latestCheck?.currency ?? item.currency)}</dd></div>
+                          <div><dt>Availability</dt><dd>{formatAvailability(item.latestCheck?.availability ?? null)}</dd></div>
                           <div><dt>Lowest</dt><dd>{formatPrice(item.lowestPrice, item.currency)}</dd></div>
                           <div><dt>Checked</dt><dd>{formatTimestamp(item.latestCheck?.checkedAt ?? null)}</dd></div>
                         </dl>
@@ -546,7 +553,7 @@ function DashboardPage({ user }: { user: User }) {
                             {item.history.length === 0 ? <li>No prices yet.</li> : item.history.map((entry) => (
                               <li key={entry.id}>
                                 <span>{formatTimestamp(entry.checkedAt)}</span>
-                                <span>{entry.status === "ok" ? formatPrice(entry.price, entry.currency) : "An error occurred"}</span>
+                                <span>{entry.status === "ok" ? `${formatPrice(entry.price, entry.currency)} · ${formatAvailability(entry.availability)}` : "An error occurred"}</span>
                               </li>
                             ))}
                           </ul>
@@ -1024,6 +1031,7 @@ function AdminPage({ user }: { user: User }) {
               <>
                 <div><strong>Name:</strong> {scrapeResult.detection.name}</div>
                 <div><strong>Detected price:</strong> {formatPrice(scrapeResult.detection.previewPrice, scrapeResult.detection.currency)}</div>
+                <div><strong>Availability:</strong> {formatAvailability(scrapeResult.detection.availability)}</div>
                 <div><strong>Detection source:</strong> {scrapeResult.detection.detectionSource}</div>
                 <div><strong>Raw text:</strong> {scrapeResult.detection.previewRawText}</div>
               </>
@@ -1128,15 +1136,21 @@ function AdminPage({ user }: { user: User }) {
                               </div>
                             </div>
                             <div className="grid two">
+                              <div className="field">
+                                <span>Availability</span>
+                                <div className="field-display">{formatAvailability(item.latestAvailability)}</div>
+                              </div>
+                              <div className="field">
+                                <span>Last checked</span>
+                                <div className="field-display">{formatTimestamp(item.latestCheckedAt)}</div>
+                              </div>
+                            </div>
+                            <div className="grid two">
                               <label className="field checkbox-field">
                                 <span>
                                   <input name="enabled" type="checkbox" defaultChecked={item.enabled} /> Enabled
                                 </span>
                               </label>
-                              <div className="field">
-                                <span>Last checked</span>
-                                <div className="field-display">{formatTimestamp(item.latestCheckedAt)}</div>
-                              </div>
                             </div>
                             <div className="hero-actions">
                               <button className="button primary" type="submit">Save item</button>
@@ -1208,6 +1222,16 @@ function formatPrice(price: string | null, currency: string | null): string {
     return "N/A";
   }
   return currency ? `${currency} ${price}` : price;
+}
+
+function formatAvailability(availability: "available" | "unavailable" | null): string {
+  if (availability === "available") {
+    return "Available";
+  }
+  if (availability === "unavailable") {
+    return "Unavailable";
+  }
+  return "Unknown";
 }
 
 function formatTimestamp(value: string | null): string {

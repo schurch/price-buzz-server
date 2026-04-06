@@ -20,7 +20,7 @@ import {
 } from "./scraper/policy.js";
 import { validateScrapeUrl } from "./scraper/url.js";
 
-export { detectTrackedItemFromHtml, extractTrackedItemCheckDataFromHtml } from "./scraper/detection.js";
+export { detectTrackedItemFromHtml, detectAvailabilityFromHtml, extractTrackedItemCheckDataFromHtml } from "./scraper/detection.js";
 export { resolveRegionalFallbackRegion, shouldRetryWithNzRegionalFallback } from "./scraper/policy.js";
 export { validateScrapeUrl } from "./scraper/url.js";
 
@@ -723,6 +723,7 @@ export async function fetchTrackedItemCheck(
 ): Promise<{
   status: "ok" | "error";
   checkedAt: string;
+  availability?: "available" | "unavailable" | null;
   price?: string | null;
   currency?: string | null;
   rawText?: string | null;
@@ -731,7 +732,7 @@ export async function fetchTrackedItemCheck(
   try {
     const resolved = await fetchHtmlWithPreferences(item.url, item.headersJson, scrapePreferences);
     let page = resolved.page;
-    let { rawText, price, currency } = extractTrackedItemCheckDataFromHtml(item, page.html);
+    let { rawText, price, currency, availability } = extractTrackedItemCheckDataFromHtml(item, page.html);
 
     if (
       (page.fetchMode === "http" || page.fetchMode === "browser")
@@ -751,6 +752,7 @@ export async function fetchTrackedItemCheck(
         const regionalRawText = regional.rawText;
         const regionalPrice = regional.price;
         const regionalCurrency = regional.currency;
+        const regionalAvailability = regional.availability;
 
         if (
           regionalCurrency === "NZD"
@@ -760,6 +762,7 @@ export async function fetchTrackedItemCheck(
           rawText = regionalRawText;
           price = regionalPrice;
           currency = regionalCurrency;
+          availability = regionalAvailability;
         }
       } catch {
         // Keep the local result if the regional fallback cannot improve it.
@@ -769,6 +772,7 @@ export async function fetchTrackedItemCheck(
     return {
       status: "ok",
       checkedAt: utcNow(),
+      availability: availability ?? null,
       price,
       currency: currency ?? item.currency,
       rawText

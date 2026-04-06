@@ -1,6 +1,12 @@
 import type { AppDb } from "./db.js";
 import { NotificationService } from "./notifications.js";
 import { fetchTrackedItemCheck } from "./scraper.js";
+import type { ScrapePreferences, TrackedItemRecord } from "./types.js";
+
+type CheckFetcher = (
+  item: TrackedItemRecord,
+  scrapePreferences: ScrapePreferences | null
+) => ReturnType<typeof fetchTrackedItemCheck>;
 
 export class TrackerService {
   private running = false;
@@ -8,7 +14,8 @@ export class TrackerService {
 
   constructor(
     private readonly db: AppDb,
-    private readonly notifications: NotificationService
+    private readonly notifications: NotificationService,
+    private readonly fetchCheck: CheckFetcher = fetchTrackedItemCheck
   ) {}
 
   getStatus(): { running: boolean; lastRunAt: string | null } {
@@ -28,6 +35,7 @@ export class TrackerService {
       url: string;
       status: "ok" | "error";
       checkedAt: string;
+      availability: "available" | "unavailable" | null;
       price: string | null;
       currency: string | null;
       errorMessage: string | null;
@@ -64,6 +72,7 @@ export class TrackerService {
       url: string;
       status: "ok" | "error";
       checkedAt: string;
+      availability: "available" | "unavailable" | null;
       price: string | null;
       currency: string | null;
       errorMessage: string | null;
@@ -98,6 +107,7 @@ export class TrackerService {
     url: string;
     status: "ok" | "error";
     checkedAt: string;
+    availability: "available" | "unavailable" | null;
     price: string | null;
     currency: string | null;
     errorMessage: string | null;
@@ -108,6 +118,7 @@ export class TrackerService {
       url: string;
       status: "ok" | "error";
       checkedAt: string;
+      availability: "available" | "unavailable" | null;
       price: string | null;
       currency: string | null;
       errorMessage: string | null;
@@ -116,7 +127,7 @@ export class TrackerService {
     for (const item of items) {
       const previous = this.db.getLatestSuccessfulCheck(item.id);
       const owner = this.db.getUserById(item.ownerUserId);
-      const result = await fetchTrackedItemCheck(item, {
+      const result = await this.fetchCheck(item, {
         acceptLanguage: item.acceptLanguage ?? owner?.acceptLanguage ?? null,
         browserLocale: item.browserLocale ?? owner?.browserLocale ?? null,
         browserTimezone: item.browserTimezone ?? owner?.browserTimezone ?? null
@@ -125,6 +136,7 @@ export class TrackerService {
         trackedItemId: item.id,
         status: result.status,
         checkedAt: result.checkedAt,
+        availability: result.availability,
         price: result.price,
         currency: result.currency,
         rawText: result.rawText,
@@ -136,6 +148,7 @@ export class TrackerService {
         url: item.url,
         status: result.status,
         checkedAt: result.checkedAt,
+        availability: result.availability ?? null,
         price: result.price ?? null,
         currency: result.currency ?? item.currency,
         errorMessage: result.errorMessage ?? null
@@ -172,6 +185,42 @@ export class TrackerService {
               trackedItemId: item.id,
               channelId: channel.id,
               eventType: "price_drop",
+              status: "failed",
+              detail: error instanceof Error ? error.message : String(error)
+            });
+          }
+        }
+      }
+
+      if (
+        previous?.availability === "unavailable"
+        && result.status === "ok"
+        && result.availability === "available"
+      ) {
+        const channels = this.db
+          .listNotificationChannelsForUser(item.ownerUserId)
+          .filter((channel) => channel.enabled)
+          .filter((channel) => channel.type !== "email" || Boolean(channel.verifiedAt));
+        for (const channel of channels) {
+          try {
+            await this.notifications.sendBackInStock({
+              channel,
+              item,
+              price: result.price ?? null,
+              currency: result.currency ?? item.currency
+            });
+            this.db.insertAlertDelivery({
+              trackedItemId: item.id,
+              channelId: channel.id,
+              eventType: "back_in_stock",
+              status: "sent",
+              detail: channel.target
+            });
+          } catch (error) {
+            this.db.insertAlertDelivery({
+              trackedItemId: item.id,
+              channelId: channel.id,
+              eventType: "back_in_stock",
               status: "failed",
               detail: error instanceof Error ? error.message : String(error)
             });

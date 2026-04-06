@@ -472,6 +472,9 @@ app.post("/api/items", async (request, reply) => {
   const initialDetectedPrice = typeof body.initialDetectedPrice === "string" ? body.initialDetectedPrice.trim() || null : null;
   const initialDetectedCurrency = typeof body.initialDetectedCurrency === "string" ? body.initialDetectedCurrency.trim() || null : null;
   const initialDetectedRawText = typeof body.initialDetectedRawText === "string" ? body.initialDetectedRawText.trim() || null : null;
+  const initialDetectedAvailability = body.initialDetectedAvailability === "available" || body.initialDetectedAvailability === "unavailable"
+    ? body.initialDetectedAvailability
+    : null;
   const pageTitle = typeof body.pageTitle === "string" ? body.pageTitle.trim() || null : null;
   const detectionSource = typeof body.detectionSource === "string" ? body.detectionSource.trim() || null : null;
 
@@ -496,6 +499,7 @@ app.post("/api/items", async (request, reply) => {
     browserLocale: scrapePreferences.browserLocale,
     browserTimezone: scrapePreferences.browserTimezone,
     currency,
+    initialDetectedAvailability,
     initialDetectedPrice,
     initialDetectedCurrency,
     initialDetectedRawText,

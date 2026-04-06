@@ -2,7 +2,7 @@ import * as cheerio from "cheerio";
 
 import { detectBlockedPageMessage } from "./blocking.js";
 import { AccessBlockedError } from "./errors.js";
-import type { DetectionResult, TrackedItemRecord } from "../types.js";
+import type { AvailabilityStatus, DetectionResult, TrackedItemRecord } from "../types.js";
 
 const COMMON_PRICE_SELECTORS = [
   "meta[property='product:price:amount']",
@@ -664,6 +664,7 @@ function buildDetectionResult(input: {
   name: string;
   pageTitle: string | null;
   currency?: string;
+  availability?: AvailabilityStatus | null;
   detectionSource: string;
   previewRawText: string;
   previewPrice: string;
@@ -673,6 +674,7 @@ function buildDetectionResult(input: {
     pageTitle: input.pageTitle,
     url: input.url,
     currency: input.currency ?? "",
+    availability: input.availability ?? null,
     detectionSource: input.detectionSource,
     previewRawText: input.previewRawText,
     previewPrice: input.previewPrice
@@ -731,11 +733,128 @@ function buildDetectionContext(finalUrl: string, html: string): HtmlDetectionCon
   };
 }
 
+function normalizeAvailabilityValue(value: string): AvailabilityStatus | null {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+
+  if (
+    /instock|in stock|limitedavailability|limited availability|onlineonly|online only|preorder|pre-order|presale|pre-sale|backorder|back-order/.test(normalized)
+  ) {
+    return "available";
+  }
+
+  if (
+    /outofstock|out of stock|soldout|sold out|unavailable|discontinued|instoreonly|in store only/.test(normalized)
+  ) {
+    return "unavailable";
+  }
+
+  return null;
+}
+
+function detectAvailabilityFromSchema(html: string): AvailabilityStatus | null {
+  const matches = html.matchAll(/"availability"\s*:\s*"([^"]+)"/gi);
+  for (const match of matches) {
+    const availability = normalizeAvailabilityValue(match[1] ?? "");
+    if (availability) {
+      return availability;
+    }
+  }
+
+  return null;
+}
+
+function detectAvailabilityFromJsonSignals(html: string): AvailabilityStatus | null {
+  const unavailablePatterns = [
+    /"(?:isBuyable|buyable|availableForDelivery|availableForPickup|inStock)"\s*:\s*false/gi,
+    /"(?:stockState|stock_status|availabilityStatus)"\s*:\s*"(?:outofstock|out of stock|soldout|sold out|unavailable|instoreonly|in store only)"/gi
+  ];
+  for (const pattern of unavailablePatterns) {
+    if (pattern.test(html)) {
+      return "unavailable";
+    }
+  }
+
+  const availablePatterns = [
+    /"(?:isBuyable|buyable|availableForDelivery|availableForPickup|inStock)"\s*:\s*true/gi,
+    /"(?:stockState|stock_status|availabilityStatus)"\s*:\s*"(?:instock|in stock|available|limitedavailability|limited availability)"/gi
+  ];
+  for (const pattern of availablePatterns) {
+    if (pattern.test(html)) {
+      return "available";
+    }
+  }
+
+  return null;
+}
+
+function collectAvailabilityTextCandidates($: cheerio.CheerioAPI): string[] {
+  const selectors = [
+    "[data-testid*='availability']",
+    "[data-test*='availability']",
+    "[data-testid*='stock']",
+    "[data-test*='stock']",
+    "[class*='availability']",
+    "[class*='stock']",
+    "[id*='availability']",
+    "[id*='stock']",
+    "button",
+    "[role='button']"
+  ];
+  const candidates = new Set<string>();
+
+  for (const selector of selectors) {
+    $(selector).slice(0, 24).each((_, element) => {
+      const text = $(element).text().replace(/\s+/g, " ").trim();
+      if (text) {
+        candidates.add(text);
+      }
+    });
+  }
+
+  return [...candidates];
+}
+
+function detectAvailabilityFromText($: cheerio.CheerioAPI): AvailabilityStatus | null {
+  const textCandidates = collectAvailabilityTextCandidates($);
+
+  for (const candidate of textCandidates) {
+    const normalized = candidate.toLowerCase();
+    if (
+      /\b(out of stock|sold out|currently unavailable|not available online|temporarily unavailable|unavailable online|in store only)\b/.test(normalized)
+    ) {
+      return "unavailable";
+    }
+    if (
+      /\b(in stock|available now|available online|add to cart|add to bag|buy now|order now)\b/.test(normalized)
+    ) {
+      return "available";
+    }
+  }
+
+  return null;
+}
+
+export function detectAvailabilityFromHtml(finalUrl: string, html: string): AvailabilityStatus | null {
+  buildDetectionContext(finalUrl, html);
+  const $ = cheerio.load(html);
+
+  return detectAvailabilityFromSchema(html)
+    ?? detectAvailabilityFromJsonSignals(html)
+    ?? detectAvailabilityFromText($)
+    ?? null;
+}
+
 function collectDetectionCandidates(
   context: HtmlDetectionContext,
   html: string
 ): DetectionCandidate[] {
   const $ = cheerio.load(html);
+  const availability = detectAvailabilityFromSchema(html)
+    ?? detectAvailabilityFromJsonSignals(html)
+    ?? detectAvailabilityFromText($);
   const candidates: DetectionCandidate[] = [];
 
   const capturedOfferPrice = detectCapturedOfferPrice(html, context.name);
@@ -747,6 +866,7 @@ function collectDetectionCandidates(
         name: context.name,
         pageTitle: context.pageTitle,
         currency: capturedOfferPrice.currency || context.pageCurrency,
+        availability,
         detectionSource: "auto:captured-offer-price",
         previewRawText: capturedOfferPrice.previewRawText,
         previewPrice: capturedOfferPrice.previewPrice
@@ -763,6 +883,7 @@ function collectDetectionCandidates(
         name: context.name,
         pageTitle: context.pageTitle,
         currency: genericCandidate.currency || context.pageCurrency,
+        availability,
         detectionSource: genericCandidate.detectionSource,
         previewRawText: genericCandidate.previewRawText,
         previewPrice: genericCandidate.previewPrice
@@ -779,6 +900,7 @@ function collectDetectionCandidates(
         name: context.name,
         pageTitle: context.pageTitle,
         currency: jsonLdPrice.currency || context.pageCurrency,
+        availability,
         detectionSource: "auto:json-ld-price",
         previewRawText: jsonLdPrice.previewRawText,
         previewPrice: jsonLdPrice.previewPrice
@@ -1059,11 +1181,13 @@ export function extractTrackedItemCheckDataFromHtml(
   rawText: string;
   price: string;
   currency: string | null;
+  availability: AvailabilityStatus | null;
 } {
   const detection = detectTrackedItemFromHtml(item.url, html);
   return {
     rawText: detection.previewRawText,
     price: detection.previewPrice,
-    currency: detection.currency || item.currency || null
+    currency: detection.currency || item.currency || null,
+    availability: detection.availability
   };
 }

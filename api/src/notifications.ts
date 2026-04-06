@@ -42,6 +42,36 @@ export class NotificationService {
     throw new Error(`Unsupported notification channel: ${input.channel.type}`);
   }
 
+  async sendBackInStock(input: {
+    channel: NotificationChannelRecord;
+    item: TrackedItemRecord;
+    price: string | null;
+    currency: string | null;
+  }): Promise<void> {
+    const lines = [
+      `Back in stock: ${input.item.name}`
+    ];
+
+    if (input.price) {
+      lines.push(`Current price: ${input.currency ?? input.item.currency} ${input.price}`);
+    }
+
+    lines.push(input.item.url);
+    const message = lines.join("\n");
+
+    if (input.channel.type === "email") {
+      await this.sendEmail(input.channel.target, "Back In Stock Alert", message);
+      return;
+    }
+
+    if (input.channel.type === "telegram") {
+      await this.sendTelegram(input.channel.target, message);
+      return;
+    }
+
+    throw new Error(`Unsupported notification channel: ${input.channel.type}`);
+  }
+
   async sendEmailVerification(to: string, confirmUrl: string): Promise<void> {
     const message = [
       "Confirm this email address for price-drop alerts.",

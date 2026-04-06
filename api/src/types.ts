@@ -6,6 +6,8 @@ export type ScrapePreferences = {
   browserTimezone: string | null;
 };
 
+export type AvailabilityStatus = "available" | "unavailable";
+
 export type UserRecord = {
   id: number;
   firstName: string;
@@ -54,6 +56,7 @@ export type PriceCheckRecord = {
   trackedItemId: number;
   status: "ok" | "error";
   checkedAt: string;
+  availability: AvailabilityStatus | null;
   price: string | null;
   currency: string | null;
   rawText: string | null;
@@ -118,6 +121,7 @@ export type TrackedItemInput = {
   currency?: string;
   headers?: Record<string, string> | null;
   detectionSource?: string | null;
+  initialDetectedAvailability?: AvailabilityStatus | null;
   initialDetectedPrice?: string | null;
   initialDetectedCurrency?: string | null;
   initialDetectedRawText?: string | null;
@@ -153,6 +157,7 @@ export type PlatformTrackedItem = {
   enabled: boolean;
   latestPrice: string | null;
   latestStatus: string | null;
+  latestAvailability: AvailabilityStatus | null;
   latestCheckedAt: string | null;
 };
 
@@ -161,6 +166,7 @@ export type DetectionResult = {
   pageTitle: string | null;
   url: string;
   currency: string;
+  availability: AvailabilityStatus | null;
   detectionSource: string;
   previewRawText: string;
   previewPrice: string;

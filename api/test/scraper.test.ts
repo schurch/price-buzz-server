@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { detectBlockedPageMessage, shouldTryBrowserForHttpPage, shouldUseBrowserFallbackForHtml } from "../src/scraper/blocking.ts";
 import {
+  detectAvailabilityFromHtml,
   detectTrackedItemFromHtml,
   extractTrackedItemCheckDataFromHtml,
   fetchHtmlViaRegionalProxy,
@@ -258,6 +259,58 @@ test("IKEA fixture resolves the NZD product price", () => {
   assert.match(result.name, /KALLAX/i);
 });
 
+test("structured availability marks the IKEA KALLAX fixture as available", () => {
+  const html = loadFixture("ikea-kallax-00616767.html");
+
+  assert.equal(
+    detectAvailabilityFromHtml(
+      "https://www.ikea.com/nz/en/p/kallax-shelving-unit-white-00616767/",
+      html
+    ),
+    "available"
+  );
+});
+
+test("structured availability marks InStoreOnly offers as unavailable", () => {
+  const html = `
+    <html>
+      <head>
+        <title>BRIMNES</title>
+        <script type="application/ld+json">
+          {
+            "@context": "https://schema.org/",
+            "@type": "Product",
+            "name": "BRIMNES",
+            "offers": {
+              "@type": "Offer",
+              "availability": "https://schema.org/InStoreOnly",
+              "price": "699",
+              "priceCurrency": "NZD"
+            }
+          }
+        </script>
+      </head>
+      <body>
+        <div class="price">$699</div>
+      </body>
+    </html>
+  `;
+
+  assert.equal(
+    detectAvailabilityFromHtml(
+      "https://www.ikea.com/nz/en/p/brimnes-bed-frame-w-storage-and-headboard-white-luroey-s19157454/",
+      html
+    ),
+    "unavailable"
+  );
+
+  const detection = detectTrackedItemFromHtml(
+    "https://www.ikea.com/nz/en/p/brimnes-bed-frame-w-storage-and-headboard-white-luroey-s19157454/",
+    html
+  );
+  assert.equal(detection.availability, "unavailable");
+});
+
 test("Apple fixture resolves the starting NZD price", () => {
   const result = detectFromFixture(
     "https://www.apple.com/nz/shop/buy-mac/macbook-neo",
@@ -340,6 +393,7 @@ test("JSON-LD tracked items do not fall back to Shopify variant cents prices", (
   assert.equal(checked.rawText, "169");
   assert.equal(checked.price, "169.00");
   assert.equal(checked.currency, "NZD");
+  assert.equal(checked.availability, null);
 });
 
 test("auto-detected inline currency items re-detect instead of replaying stale HTML regexes", () => {
@@ -378,6 +432,7 @@ test("auto-detected inline currency items re-detect instead of replaying stale H
   assert.equal(checked.rawText, "NZ$ 11.56");
   assert.equal(checked.price, "11.56");
   assert.equal(checked.currency, "NZD");
+  assert.equal(checked.availability, "available");
 });
 
 test("regional proxy challenge HTML is rejected even when blocked flag is false", async () => {

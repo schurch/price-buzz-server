@@ -16,6 +16,7 @@ export type DetectionResult = {
   pageTitle: string | null;
   url: string;
   currency: string;
+  availability: "available" | "unavailable" | null;
   detectionSource: string;
   previewRawText: string;
   previewPrice: string;
@@ -26,6 +27,7 @@ export type PriceCheckRecord = {
   trackedItemId: number;
   status: "ok" | "error";
   checkedAt: string;
+  availability: "available" | "unavailable" | null;
   price: string | null;
   currency: string | null;
   rawText: string | null;
@@ -95,6 +97,7 @@ export type PlatformTrackedItem = {
   enabled: boolean;
   latestPrice: string | null;
   latestStatus: string | null;
+  latestAvailability: "available" | "unavailable" | null;
   latestCheckedAt: string | null;
 };
 
@@ -125,6 +128,7 @@ export type ScrapeDebugResult = {
     pageTitle: string | null;
     url: string;
     currency: string;
+    availability: "available" | "unavailable" | null;
     detectionSource: string;
     previewRawText: string;
     previewPrice: string;

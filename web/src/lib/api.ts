@@ -140,6 +140,7 @@ export function runChecks(): Promise<{
       url: string;
       status: "ok" | "error";
       checkedAt: string;
+      availability: "available" | "unavailable" | null;
       price: string | null;
       currency: string | null;
       errorMessage: string | null;

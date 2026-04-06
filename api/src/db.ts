@@ -82,6 +82,7 @@ export class AppDb {
         tracked_item_id INTEGER NOT NULL,
         status TEXT NOT NULL,
         checked_at TEXT NOT NULL,
+        availability TEXT,
         price TEXT,
         currency TEXT,
         raw_text TEXT,
@@ -169,6 +170,7 @@ export class AppDb {
     this.ensureColumn("tracked_items", "accept_language", "TEXT");
     this.ensureColumn("tracked_items", "browser_locale", "TEXT");
     this.ensureColumn("tracked_items", "browser_timezone", "TEXT");
+    this.ensureColumn("price_checks", "availability", "TEXT");
     this.dropLegacyTrackedItemExtractionColumns();
     this.repairTrackedItemForeignKeys();
   }
@@ -254,14 +256,15 @@ export class AppDb {
         tracked_item_id INTEGER NOT NULL,
         status TEXT NOT NULL,
         checked_at TEXT NOT NULL,
+        availability TEXT,
         price TEXT,
         currency TEXT,
         raw_text TEXT,
         error_message TEXT,
         FOREIGN KEY (tracked_item_id) REFERENCES tracked_items (id) ON DELETE CASCADE
       );
-      INSERT INTO price_checks (id, tracked_item_id, status, checked_at, price, currency, raw_text, error_message)
-      SELECT id, tracked_item_id, status, checked_at, price, currency, raw_text, error_message
+      INSERT INTO price_checks (id, tracked_item_id, status, checked_at, availability, price, currency, raw_text, error_message)
+      SELECT id, tracked_item_id, status, checked_at, NULL, price, currency, raw_text, error_message
       FROM price_checks_legacy_fk_fix;
       DROP TABLE price_checks_legacy_fk_fix;
       CREATE INDEX IF NOT EXISTS idx_price_checks_tracked_item_checked_at
@@ -538,6 +541,7 @@ export class AppDb {
       });
 
       this.insertInitialPriceCheckIfMissing(existing.id, {
+        availability: input.initialDetectedAvailability ?? null,
         price: input.initialDetectedPrice?.trim() || null,
         currency: input.initialDetectedCurrency?.trim() || input.currency?.trim() || null,
         rawText: input.initialDetectedRawText?.trim() || null,
@@ -580,6 +584,7 @@ export class AppDb {
 
     const trackedItemId = Number(result.lastInsertRowid);
     this.insertInitialPriceCheckIfMissing(trackedItemId, {
+      availability: input.initialDetectedAvailability ?? null,
       price: input.initialDetectedPrice?.trim() || null,
       currency: input.initialDetectedCurrency?.trim() || input.currency?.trim() || null,
       rawText: input.initialDetectedRawText?.trim() || null,
@@ -590,6 +595,7 @@ export class AppDb {
   }
 
   private insertInitialPriceCheckIfMissing(trackedItemId: number, input: {
+    availability: "available" | "unavailable" | null;
     price: string | null;
     currency: string | null;
     rawText: string | null;
@@ -611,11 +617,12 @@ export class AppDb {
     }
 
     this.db.prepare(`
-      INSERT INTO price_checks (tracked_item_id, status, checked_at, price, currency, raw_text, error_message)
-      VALUES (?, 'ok', ?, ?, ?, ?, NULL)
+      INSERT INTO price_checks (tracked_item_id, status, checked_at, availability, price, currency, raw_text, error_message)
+      VALUES (?, 'ok', ?, ?, ?, ?, ?, NULL)
     `).run(
       trackedItemId,
       input.checkedAt,
+      input.availability,
       input.price,
       input.currency,
       input.rawText
@@ -751,6 +758,7 @@ export class AppDb {
     trackedItemId: number;
     status: "ok" | "error";
     checkedAt: string;
+    availability?: "available" | "unavailable" | null;
     price?: string | null;
     currency?: string | null;
     rawText?: string | null;
@@ -758,14 +766,15 @@ export class AppDb {
   }): void {
     this.db.prepare(`
       INSERT INTO price_checks (
-        tracked_item_id, status, checked_at, price, currency, raw_text, error_message
+        tracked_item_id, status, checked_at, availability, price, currency, raw_text, error_message
       ) VALUES (
-        @trackedItemId, @status, @checkedAt, @price, @currency, @rawText, @errorMessage
+        @trackedItemId, @status, @checkedAt, @availability, @price, @currency, @rawText, @errorMessage
       )
     `).run({
       trackedItemId: input.trackedItemId,
       status: input.status,
       checkedAt: input.checkedAt,
+      availability: input.availability ?? null,
       price: input.price ?? null,
       currency: input.currency ?? null,
       rawText: input.rawText ?? null,
@@ -780,6 +789,7 @@ export class AppDb {
         tracked_item_id AS trackedItemId,
         status,
         checked_at AS checkedAt,
+        availability,
         price,
         currency,
         raw_text AS rawText,
@@ -800,6 +810,7 @@ export class AppDb {
         tracked_item_id AS trackedItemId,
         status,
         checked_at AS checkedAt,
+        availability,
         price,
         currency,
         raw_text AS rawText,
@@ -1089,6 +1100,22 @@ export class AppDb {
     `).run(input.trackedItemId, input.channelId, input.eventType, input.status, input.detail ?? null, utcNow());
   }
 
+  listAlertDeliveriesForTrackedItem(trackedItemId: number): AlertDeliveryRecord[] {
+    return this.db.prepare(`
+      SELECT
+        id,
+        tracked_item_id AS trackedItemId,
+        channel_id AS channelId,
+        event_type AS eventType,
+        status,
+        detail,
+        created_at AS createdAt
+      FROM alert_deliveries
+      WHERE tracked_item_id = ?
+      ORDER BY created_at DESC, id DESC
+    `).all(trackedItemId) as AlertDeliveryRecord[];
+  }
+
   listUsersWithCounts(): UserWithCounts[] {
     const rows = this.db.prepare(`
       SELECT
@@ -1127,6 +1154,7 @@ export class AppDb {
         tracked_items.archived_at AS archivedAt,
         latest.price AS latestPrice,
         latest.status AS latestStatus,
+        latest.availability AS latestAvailability,
         latest.checked_at AS latestCheckedAt
       FROM tracked_items
       JOIN users ON users.id = tracked_items.owner_user_id
