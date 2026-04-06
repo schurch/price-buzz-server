@@ -102,6 +102,10 @@ export function detectBlockedPageMessage(html: string, pageUrl: string, title: s
     return "This retailer is blocking automated access right now, so PriceBuzz could not load the real product page.";
   }
 
+  if (/incapsula|imperva|_incapsula_resource|request unsuccessful\.\s*incapsula incident id/.test(lowered)) {
+    return "This retailer is blocking automated access right now, so PriceBuzz could not load the real product page.";
+  }
+
   if (/captcha|verify you are human|unusual traffic|bot detection|just a moment|enable javascript|enable cookies/.test(lowered)) {
     return "This retailer is challenging automated traffic right now, so PriceBuzz could not load the real product page.";
   }
@@ -111,7 +115,7 @@ export function detectBlockedPageMessage(html: string, pageUrl: string, title: s
 
 export function isBrowserChallengePage(html: string, pageUrl: string, title: string): boolean {
   const lowered = `${title}\n${pageUrl}\n${html.slice(0, 12000)}`.toLowerCase();
-  return /captcha|verify you are human|access denied|temporarily blocked|unusual traffic|enable javascript|enable cookies|akamai|bot detection|just a moment/.test(lowered);
+  return /captcha|verify you are human|access denied|temporarily blocked|unusual traffic|enable javascript|enable cookies|akamai|bot detection|just a moment|incapsula|imperva|_incapsula_resource/.test(lowered);
 }
 
 export function hasEmbeddedPriceSignals(html: string): boolean {

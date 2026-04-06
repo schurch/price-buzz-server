@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { shouldUseBrowserFallbackForHtml } from "../src/scraper/blocking.ts";
+import { shouldTryBrowserForHttpPage, shouldUseBrowserFallbackForHtml } from "../src/scraper/blocking.ts";
 import {
   detectTrackedItemFromHtml,
   extractTrackedItemCheckDataFromHtml,
@@ -83,6 +83,38 @@ test("embedded product price signals still suppress browser fallback", () => {
     ),
     false
   );
+});
+
+test("Incapsula interstitials force browser fallback", () => {
+  const html = `
+    <html style="height:100%">
+      <head>
+        <meta name="robots" content="noindex, nofollow">
+        <script src="/_Incapsula_Resource?SWJIYLWA=abc123"></script>
+      </head>
+      <body style="margin:0px;height:100%">
+        <iframe
+          id="main-iframe"
+          src="/_Incapsula_Resource?SWUDNSAI=31"
+          width="100%"
+          height="100%"
+        >
+          Request unsuccessful. Incapsula incident ID: 999000620030353173
+        </iframe>
+      </body>
+    </html>
+  `;
+
+  const result = shouldTryBrowserForHttpPage(
+    "https://www.harveynorman.co.nz/home-appliances/kitchen-appliances/grills-and-cookers/ninja-pro-4-in-1-4.7l-air-fryer-black-af141.html",
+    {
+      html,
+      url: "https://www.harveynorman.co.nz/home-appliances/kitchen-appliances/grills-and-cookers/ninja-pro-4-in-1-4.7l-air-fryer-black-af141.html"
+    }
+  );
+
+  assert.equal(result.shouldTry, true);
+  assert.match(result.blockedMessage ?? "", /blocking automated access/i);
 });
 
 test("The Warehouse fixture resolves the NZD product price", () => {
