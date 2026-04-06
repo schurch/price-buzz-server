@@ -21,6 +21,15 @@ function countShellSignals(rawUrl: string, html: string, finalUrl: string): numb
     signals += 1;
   }
 
+  // Some storefronts ship an almost-empty app shell with the real price rendered only after client-side hydration.
+  // Treat an empty root container plus a large JS bundle fan-out as a strong signal to use the browser path.
+  if (
+    /<div[^>]+id=["'](?:__next|root|app-root|app)["'][^>]*>\s*<\/div>/i.test(html)
+    && (html.match(/<script\b[^>]+src=["'][^"']+\.js[^"']*["'][^>]*>/gi)?.length ?? 0) >= 5
+  ) {
+    signals += 3;
+  }
+
   const canonicalMatch = /<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)["']/i.exec(html);
   if (canonicalMatch?.[1]) {
     try {

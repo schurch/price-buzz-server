@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { shouldUseBrowserFallbackForHtml } from "../src/scraper/blocking.ts";
 import {
   detectTrackedItemFromHtml,
   extractTrackedItemCheckDataFromHtml,
@@ -26,6 +27,63 @@ function loadFixture(name: string): string {
 function detectFromFixture(url: string, fixtureName: string) {
   return detectTrackedItemFromHtml(url, loadFixture(fixtureName));
 }
+
+test("empty JS app shells trigger browser fallback", () => {
+  const html = `
+    <html>
+      <head>
+        <title>Ninja Pro Air Fryer 4.7 Litre AF141WHANZ | Briscoes</title>
+        <script defer src="/vendors.js"></script>
+        <script defer src="/client.js"></script>
+        <script defer src="/gallery.js"></script>
+        <script defer src="/product.js"></script>
+        <script defer src="/chunk.js"></script>
+      </head>
+      <body>
+        <div id="root"></div>
+        <noscript>Oops! JavaScript is disabled</noscript>
+      </body>
+    </html>
+  `;
+
+  assert.equal(
+    shouldUseBrowserFallbackForHtml(
+      "https://www.briscoes.co.nz/product/1121994/ninja-pro-air-fryer-4-7-litre-af141whanz/",
+      html,
+      "https://www.briscoes.co.nz/product/1121994/ninja-pro-air-fryer-4-7-litre-af141whanz/"
+    ),
+    true
+  );
+});
+
+test("embedded product price signals still suppress browser fallback", () => {
+  const html = `
+    <html>
+      <head>
+        <title>Product</title>
+        <meta property="product:price:amount" content="169.00">
+        <meta property="product:price:currency" content="NZD">
+        <script defer src="/vendors.js"></script>
+        <script defer src="/client.js"></script>
+        <script defer src="/gallery.js"></script>
+        <script defer src="/product.js"></script>
+        <script defer src="/chunk.js"></script>
+      </head>
+      <body>
+        <div id="root"></div>
+      </body>
+    </html>
+  `;
+
+  assert.equal(
+    shouldUseBrowserFallbackForHtml(
+      "https://example.com/product/123",
+      html,
+      "https://example.com/product/123"
+    ),
+    false
+  );
+});
 
 test("The Warehouse fixture resolves the NZD product price", () => {
   const result = detectFromFixture(
