@@ -790,7 +790,44 @@ function detectAvailabilityFromJsonSignals(html: string): AvailabilityStatus | n
   return null;
 }
 
-function collectAvailabilityTextCandidates($: cheerio.CheerioAPI): string[] {
+function isProbablyHiddenElement(node: cheerio.Cheerio<any>): boolean {
+  const style = (node.attr("style") ?? "").toLowerCase();
+  const hiddenAttr = node.attr("hidden");
+  const ariaHidden = (node.attr("aria-hidden") ?? "").toLowerCase();
+  const classes = (node.attr("class") ?? "").toLowerCase();
+
+  return Boolean(
+    hiddenAttr !== undefined
+    || ariaHidden === "true"
+    || /display\s*:\s*none|visibility\s*:\s*hidden/.test(style)
+    || /\bhidden\b/.test(classes)
+  );
+}
+
+function readAvailabilityCandidateText(node: cheerio.Cheerio<any>): string {
+  const text = node.text().replace(/\s+/g, " ").trim();
+  if (text) {
+    return text;
+  }
+
+  const attributeCandidates = [
+    node.attr("aria-label"),
+    node.attr("alt"),
+    node.attr("title"),
+    node.attr("value")
+  ];
+
+  for (const candidate of attributeCandidates) {
+    const normalized = (candidate ?? "").replace(/\s+/g, " ").trim();
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return "";
+}
+
+function collectAvailabilityTextCandidates($: cheerio.CheerioAPI): { visible: string[]; all: string[] } {
   const selectors = [
     "[data-testid*='availability']",
     "[data-test*='availability']",
@@ -803,38 +840,67 @@ function collectAvailabilityTextCandidates($: cheerio.CheerioAPI): string[] {
     "button",
     "[role='button']"
   ];
-  const candidates = new Set<string>();
+  const visibleCandidates = new Set<string>();
+  const allCandidates = new Set<string>();
 
   for (const selector of selectors) {
     $(selector).slice(0, 24).each((_, element) => {
-      const text = $(element).text().replace(/\s+/g, " ").trim();
+      const node = $(element);
+      const text = readAvailabilityCandidateText(node);
       if (text) {
-        candidates.add(text);
+        allCandidates.add(text);
+        if (!isProbablyHiddenElement(node)) {
+          visibleCandidates.add(text);
+        }
       }
     });
   }
 
-  return [...candidates];
+  return {
+    visible: [...visibleCandidates],
+    all: [...allCandidates]
+  };
 }
 
 function detectAvailabilityFromText($: cheerio.CheerioAPI): AvailabilityStatus | null {
-  const textCandidates = collectAvailabilityTextCandidates($);
+  const { visible, all } = collectAvailabilityTextCandidates($);
 
-  for (const candidate of textCandidates) {
-    const normalized = candidate.toLowerCase();
-    if (
-      /\b(out of stock|sold out|currently unavailable|not available online|temporarily unavailable|unavailable online|in store only)\b/.test(normalized)
-    ) {
-      return "unavailable";
+  const detectFromCandidates = (textCandidates: string[], preferAvailable = false): AvailabilityStatus | null => {
+    let sawUnavailable = false;
+    let sawAvailable = false;
+
+    for (const candidate of textCandidates) {
+      const normalized = candidate.toLowerCase();
+      if (
+        /\b(out of stock|sold out|currently unavailable|not available online|temporarily unavailable|unavailable online|in store only)\b/.test(normalized)
+      ) {
+        sawUnavailable = true;
+      }
+      if (
+        /\b(in stock|available now|available online|add to cart|add to bag|buy now|order now)\b/.test(normalized)
+      ) {
+        sawAvailable = true;
+      }
     }
-    if (
-      /\b(in stock|available now|available online|add to cart|add to bag|buy now|order now)\b/.test(normalized)
-    ) {
+
+    if (preferAvailable && sawAvailable) {
       return "available";
     }
+    if (sawUnavailable) {
+      return "unavailable";
+    }
+    if (sawAvailable) {
+      return "available";
+    }
+    return null;
+  };
+
+  const visibleResult = detectFromCandidates(visible, true);
+  if (visibleResult) {
+    return visibleResult;
   }
 
-  return null;
+  return detectFromCandidates(all);
 }
 
 export function detectAvailabilityFromHtml(finalUrl: string, html: string): AvailabilityStatus | null {

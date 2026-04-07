@@ -311,6 +311,36 @@ test("structured availability marks InStoreOnly offers as unavailable", () => {
   assert.equal(detection.availability, "unavailable");
 });
 
+test("visible add-to-cart beats hidden Chemist Warehouse unavailable states", () => {
+  const html = `
+    <html>
+      <body>
+        <div class="Add2Cart boxLowStock" itemprop="availability" content="InStock" style="display: none;">
+          Temporarily Low Stock Online
+        </div>
+        <div class="boxStock boxOutOfStock row">
+          Product Out of Stock
+        </div>
+        <div class="boxStock boxOutOfStock row">
+          Temporarily Unavailable Online and Click &amp; Collect
+        </div>
+        <div class="Add2Cart boxInStoreOnly" style="display: none;">
+          This Product Is Currently Available In Store Only
+        </div>
+        <img role="button" aria-label="Add to cart" alt="Add to cart" />
+      </body>
+    </html>
+  `;
+
+  assert.equal(
+    detectAvailabilityFromHtml(
+      "https://www.chemistwarehouse.co.nz/buy/95694/good-health-joint-active-uc-ii-90-capsules",
+      html
+    ),
+    "available"
+  );
+});
+
 test("Apple fixture resolves the starting NZD price", () => {
   const result = detectFromFixture(
     "https://www.apple.com/nz/shop/buy-mac/macbook-neo",

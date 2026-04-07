@@ -453,9 +453,6 @@ function DashboardPage({ user }: { user: User }) {
         <div className="dashboard-hero-copy">
           <p className="eyebrow">Dashboard</p>
           <h1>{trackedCount === 0 ? "Track your first product" : "Tracked price history"}</h1>
-          <p className="dashboard-hero-text">
-            Current prices, availability, lowest observed prices, and quick trend lines for every tracked item.
-          </p>
         </div>
 
         <div className="dashboard-hero-stats">
@@ -539,11 +536,13 @@ function DashboardPage({ user }: { user: User }) {
         <div className="dashboard-empty">No tracked items yet. Add a link above to start building your dashboard.</div>
       ) : (
         <section className="dashboard-groups">
-          {groupedItems.map(([groupName, groupItems]) => (
+          {groupedItems.map(([groupName, groupItems]) => {
+            const isOpen = groupMode === "none" ? true : Boolean(openGroups[groupName]);
+            return (
             <details
               key={groupName}
               className="dashboard-group"
-              open={groupMode === "none" ? true : Boolean(openGroups[groupName])}
+              open={isOpen}
               onToggle={(event) => {
                 if (groupMode === "none") return;
                 const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
@@ -551,69 +550,76 @@ function DashboardPage({ user }: { user: User }) {
               }}
             >
               <summary className="dashboard-group-header">
-                <h2>{groupName}</h2>
-                <span>{groupItems.length} item{groupItems.length === 1 ? "" : "s"}</span>
+                <div className="dashboard-group-title">
+                  <h2>{groupName}</h2>
+                  <span>{groupItems.length} item{groupItems.length === 1 ? "" : "s"}</span>
+                </div>
+                {groupMode !== "none" && (
+                  <span className="dashboard-group-toggle" aria-hidden="true">
+                    <span>{isOpen ? "Collapse" : "Expand"}</span>
+                  </span>
+                )}
               </summary>
               <div className="dashboard-card-grid">
                 {groupItems.map((item) => (
                   <article key={item.id} className="dashboard-card">
                     <div className="dashboard-card-top">
                       <div className="dashboard-card-copy">
-                        <a className="site-badge" href={siteHomeUrl(item.url)} target="_blank" rel="noreferrer">{siteLabel(item.url)}</a>
-                        <h3>{item.name}</h3>
+                        <h3><a href={item.url} target="_blank" rel="noreferrer">{item.name}</a></h3>
                       </div>
-                      <span className="dashboard-pill">{formatAvailability(item.latestCheck?.availability ?? null)}</span>
                     </div>
 
                     <dl className="dashboard-card-stats">
                       <div>
-                        <dt>Current</dt>
+                        <dt>Current price</dt>
                         <dd>{formatPrice(item.latestCheck?.price ?? null, item.latestCheck?.currency ?? item.currency)}</dd>
                       </div>
                       <div>
-                        <dt>Lowest</dt>
+                        <dt>Lowest price</dt>
                         <dd>{formatPrice(item.lowestPrice, item.currency)}</dd>
-                      </div>
-                      <div>
-                        <dt>Checked</dt>
-                        <dd>{formatTimestamp(item.latestCheck?.checkedAt ?? null)}</dd>
-                      </div>
-                      <div>
-                        <dt>Status</dt>
-                        <dd>{item.latestCheck?.status === "error" ? "Error" : "Tracking"}</dd>
                       </div>
                     </dl>
 
+                    <div className={`dashboard-trend ${isAtLowestPrice(item) ? "" : "is-neutral"}`}>
+                      {trendLabel(item)}
+                    </div>
+
                     <div className="dashboard-graph-wrap">
                       <div className="dashboard-graph-head">
-                        <span>Trend</span>
-                        <span>{historyMeta(item)}</span>
+                        <span>{formatPrice(item.lowestPrice, item.currency)} low</span>
+                        <span>{formatPrice(highestTrackedPrice(item), item.currency)} high</span>
                       </div>
                       <Sparkline item={item} />
                     </div>
 
                     <div className="dashboard-card-meta">
-                      <a className="item-url" href={item.url} target="_blank" rel="noreferrer">{item.url}</a>
+                      <div>Store: {siteLabel(item.url)}</div>
+                      <div>Last checked {formatTimestamp(item.latestCheck?.checkedAt ?? null)}.</div>
+                      <a className="item-url" href={item.url} target="_blank" rel="noreferrer">Open product page</a>
                     </div>
 
-                    <div className="history-block">
-                      <h4>Recent checks</h4>
+                    <details className="history-block">
+                      <summary className="history-summary">
+                        <h4>Recent checks</h4>
+                        <span>{Math.min(item.history.length, 4)} shown</span>
+                      </summary>
                       <ul>
                         {item.history.length === 0 ? <li>No prices yet.</li> : item.history.slice(0, 4).map((entry) => (
                           <li key={entry.id}>
-                            <span>{formatTimestamp(entry.checkedAt)}</span>
-                            <span>{entry.status === "ok" ? `${formatPrice(entry.price, entry.currency)} · ${formatAvailability(entry.availability)}` : "An error occurred"}</span>
+                            <span>{entry.status === "ok" ? formatPrice(entry.price, entry.currency) : "An error occurred"}</span>
+                            <span>{formatDateOnly(entry.checkedAt)}</span>
                           </li>
                         ))}
                       </ul>
-                    </div>
+                    </details>
 
                     <button className="button danger dashboard-card-action" onClick={() => void handleDelete(item.id)}>Archive</button>
                   </article>
                 ))}
               </div>
             </details>
-          ))}
+          );
+          })}
         </section>
       )}
     </AppShell>
@@ -663,8 +669,8 @@ function Sparkline({ item }: { item: TrackedItemWithHistory }) {
         <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} className="sparkline-baseline" />
         <defs>
           <linearGradient id={`sparkline-fill-${item.id}`} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="rgba(15, 123, 255, 0.26)" />
-            <stop offset="100%" stopColor="rgba(15, 123, 255, 0.04)" />
+            <stop offset="0%" stopColor="var(--accent-fill-strong)" />
+            <stop offset="100%" stopColor="var(--accent-fill-soft)" />
           </linearGradient>
         </defs>
         <polygon points={areaPoints} fill={`url(#sparkline-fill-${item.id})`} className="sparkline-fill" />
@@ -677,6 +683,42 @@ function Sparkline({ item }: { item: TrackedItemWithHistory }) {
 function historyMeta(item: TrackedItemWithHistory): string {
   const successfulPoints = item.history.filter((entry) => entry.status === "ok" && entry.price).length;
   return successfulPoints === 0 ? "No price history" : `${successfulPoints} point${successfulPoints === 1 ? "" : "s"}`;
+}
+
+function successfulPrices(item: TrackedItemWithHistory): number[] {
+  return item.history
+    .filter((entry) => entry.status === "ok" && entry.price)
+    .map((entry) => Number.parseFloat(entry.price ?? ""))
+    .filter((value) => Number.isFinite(value));
+}
+
+function highestTrackedPrice(item: TrackedItemWithHistory): string | null {
+  const prices = successfulPrices(item);
+  if (prices.length === 0) {
+    return item.lowestPrice;
+  }
+  return Math.max(...prices).toFixed(2);
+}
+
+function isAtLowestPrice(item: TrackedItemWithHistory): boolean {
+  const current = Number.parseFloat(item.latestCheck?.price ?? "");
+  const lowest = Number.parseFloat(item.lowestPrice ?? "");
+  return Number.isFinite(current) && Number.isFinite(lowest) && current <= lowest;
+}
+
+function trendLabel(item: TrackedItemWithHistory): string {
+  const current = Number.parseFloat(item.latestCheck?.price ?? "");
+  const lowest = Number.parseFloat(item.lowestPrice ?? "");
+
+  if (!Number.isFinite(current) || !Number.isFinite(lowest)) {
+    return "No price comparison available";
+  }
+
+  if (current <= lowest) {
+    return "At lowest tracked price";
+  }
+
+  return `${formatPrice((current - lowest).toFixed(2), item.currency)} above low`;
 }
 
 function SettingsPage({
@@ -1301,6 +1343,21 @@ function formatTimestamp(value: string | null): string {
   return new Intl.DateTimeFormat("en-NZ", {
     dateStyle: "medium",
     timeStyle: "short"
+  }).format(date);
+}
+
+function formatDateOnly(value: string | null): string {
+  if (!value) {
+    return "Unknown date";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat("en-NZ", {
+    dateStyle: "medium"
   }).format(date);
 }
 
